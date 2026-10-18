@@ -33,20 +33,17 @@ func BuildProject(inputFile, outDir, target string) error {
 		if err := writeAndroidComposeScaffold(app, outDir); err != nil {
 			return err
 		}
-		fmt.Printf("[gapk] generated Kotlin Compose project in %s
-", outDir)
+		fmt.Printf("[gapk] generated Kotlin Compose project in %s\n", outDir)
 		return nil
 	}
 
 	if err := writeFlutterScaffold(app, outDir); err != nil {
 		return err
 	}
-	fmt.Printf("[gapk] generated Flutter project in %s
-", outDir)
+	fmt.Printf("[gapk] generated Flutter project in %s\n", outDir)
 
 	if flutterBin, err := exec.LookPath("flutter"); err == nil {
-		fmt.Printf("[gapk] compiling APK with %s build apk...
-", flutterBin)
+		fmt.Printf("[gapk] compiling APK with %s build apk...\n", flutterBin)
 		cmd := exec.Command(flutterBin, "build", "apk", "--debug")
 		cmd.Dir = outDir
 		cmd.Stdout = os.Stdout

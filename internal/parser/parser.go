@@ -103,7 +103,7 @@ func (p *Parser) ParseApp() (*ast.AppNode, error) {
 	}
 
 	if p.cur().Type != token.Ident || p.cur().Literal != "app" {
-		return nil, fmt.Errorf("line %d: expected 'app "Name" {'", p.cur().Line)
+		return nil, fmt.Errorf("line %d: expected 'app \"Name\" {'", p.cur().Line)
 	}
 	p.advance()
 

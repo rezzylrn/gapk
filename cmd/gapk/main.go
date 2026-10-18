@@ -89,8 +89,7 @@ func main() {
 		fmt.Print(helpText)
 
 	case "version", "-v", "--version":
-		fmt.Printf("gapk v%s
-", version)
+		fmt.Printf("gapk v%s\n", version)
 
 	case "init":
 		dir := "."
@@ -104,8 +103,7 @@ func main() {
 		if err := os.WriteFile(mainFile, []byte(starterTemplate), 0644); err != nil {
 			fatal(err)
 		}
-		fmt.Printf("[gapk] initialized %s
-", mainFile)
+		fmt.Printf("[gapk] initialized %s\n", mainFile)
 
 	case "transpile":
 		if len(args) < 1 {
@@ -134,15 +132,12 @@ func main() {
 		}
 
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q
-
-%s", cmd, helpText)
+		fmt.Fprintf(os.Stderr, "unknown command %q\n\n%s", cmd, helpText)
 		os.Exit(1)
 	}
 }
 
 func fatal(err error) {
-	fmt.Fprintf(os.Stderr, "error: %v
-", err)
+	fmt.Fprintf(os.Stderr, "error: %v\n", err)
 	os.Exit(1)
 }
