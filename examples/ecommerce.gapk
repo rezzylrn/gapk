@@ -1,0 +1,105 @@
+package shop
+
+// Full Flutter-equivalent multi-screen app written in clean Go-style gapk syntax
+app "GoMart" [theme: "dark", primary: "#10B981"] {
+    customer := "Alex"
+    searchQuery := ""
+    cartCount := 2
+    darkMode := true
+    volume := 50
+    category := "Electronics"
+    items := ["Mechanical Keyboard", "USB-C Hub", "Wireless Mouse"]
+
+    screen "Home" [padding: 16] {
+        appbar "GoMart Store" [center: true, bg: "#0F172A"] {
+            icon_button "shopping_cart" {
+                navigate "Checkout"
+            }
+        }
+
+        drawer {
+            listtile "Storefront" "Browse all items" [icon: "store"] {
+                navigate "Home"
+            }
+            listtile "Checkout" "View your cart" [icon: "shopping_bag"] {
+                navigate "Checkout"
+            }
+        }
+
+        scroll {
+            column [spacing: 14] {
+                card [padding: 16, radius: 14, bg: "#1E293B", elevation: 4] {
+                    row [align: "between"] {
+                        column [spacing: 4] {
+                            text "Hello, " + customer [size: 20, weight: "bold", color: "#34D399"]
+                            text "Active Cart Items: " + cartCount [size: 14, color: "#94A3B8"]
+                        }
+                        badge "VIP"
+                    }
+                }
+
+                input searchQuery "Search products" [icon: "search", hint: "Type product name..."]
+                dropdown category ["Electronics", "Accessories", "Audio"]
+
+                text "Featured Catalog (" + category + ")" [size: 16, weight: "bold"]
+
+                list_for product in items {
+                    card [padding: 12, radius: 10] {
+                        listtile product "In Stock • Ready to ship" [icon: "inventory_2", trailing: "add_shopping_cart"] {
+                            cartCount = cartCount + 1
+                            snackbar "Added " + product + " to cart!"
+                        }
+                    }
+                }
+
+                row [spacing: 10] {
+                    button "Add Custom Item" [bg: "#10B981"] {
+                        if searchQuery != "" {
+                            list_add items searchQuery
+                            snackbar "Added " + searchQuery
+                        } else {
+                            dialog "Empty Input" "Please type a product name in the search box first."
+                        }
+                    }
+                    button "Go to Checkout" [variant: "outlined"] {
+                        navigate "Checkout"
+                    }
+                }
+            }
+        }
+
+        fab "add" [bg: "#10B981"] {
+            cartCount = cartCount + 1
+            toast "Quick item added (" + cartCount + ")"
+        }
+
+        bottom_nav {
+            nav_item "Shop" "home" "Home"
+            nav_item "Cart" "shopping_cart" "Checkout"
+        }
+    }
+
+    screen "Checkout" [padding: 16] {
+        appbar "Checkout Summary" [center: true]
+
+        column [spacing: 12] {
+            card [padding: 16, radius: 12] {
+                text "Customer: " + customer [size: 18, weight: "bold"]
+                text "Total Items: " + cartCount [size: 16]
+                divider
+                switch_toggle darkMode "Express Delivery"
+                slider volume [min: 0, max: 100]
+            }
+
+            row [spacing: 10] {
+                button "Confirm Order" [bg: "#10B981"] {
+                    dialog "Order Confirmed" "Thank you " + customer + "! Your " + cartCount + " items are on the way."
+                    cartCount = 0
+                }
+                button "Back" [variant: "text"] {
+                    navigate_back
+                }
+            }
+        }
+    }
+}
