@@ -14,13 +14,76 @@ import (
 )
 
 func ParseFile(path string) (*ast.AppNode, error) {
+	return parseFileRecursive(path, make(map[string]bool))
+}
+
+func parseFileRecursive(path string, visited map[string]bool) (*ast.AppNode, error) {
+	// Resolve absolute path to avoid duplicates
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	if visited[absPath] {
+		return nil, fmt.Errorf("circular import detected: %s", path)
+	}
+	visited[absPath] = true
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 	tokens := lexer.Tokenize(string(data))
 	p := parser.New(tokens)
-	return p.ParseApp()
+
+	// Try ParseApp first (for main file), fallback to ParseFragment (for imports)
+	app, err := p.ParseApp()
+	if err != nil {
+		// If it's not the main file and ParseApp failed, try as fragment
+		p2 := parser.New(tokens)
+		app, err = p2.ParseFragment()
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+	}
+
+	// Recursively parse imports and merge
+	baseDir := filepath.Dir(absPath)
+	for _, imp := range app.Imports {
+		impPath := imp
+		if !filepath.IsAbs(impPath) {
+			impPath = filepath.Join(baseDir, impPath)
+		}
+		imported, err := parseFileRecursive(impPath, visited)
+		if err != nil {
+			return nil, err
+		}
+		// Merge states (avoid duplicates by name)
+		existingStates := make(map[string]bool)
+		for _, s := range app.States {
+			existingStates[s.Name] = true
+		}
+		for _, s := range imported.States {
+			if !existingStates[s.Name] {
+				app.States = append(app.States, s)
+				existingStates[s.Name] = true
+			}
+		}
+		// Merge screens (avoid duplicates by title)
+		existingScreens := make(map[string]bool)
+		for _, s := range app.Screens {
+			existingScreens[s.Title] = true
+		}
+		for _, s := range imported.Screens {
+			if !existingScreens[s.Title] {
+				app.Screens = append(app.Screens, s)
+				existingScreens[s.Title] = true
+			}
+		}
+	}
+	// Clear imports after merging (they're resolved)
+	app.Imports = nil
+
+	return app, nil
 }
 
 func BuildProject(inputFile, outDir, target string) error {

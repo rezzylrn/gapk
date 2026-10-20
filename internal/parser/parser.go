@@ -85,6 +85,58 @@ func (p *Parser) parseModifiers() (ast.Modifiers, error) {
 	return mods, nil
 }
 
+// ParseFragment parses a .gapk file without an app block.
+// Used for imported files containing only screens, states, and imports.
+// This enables multi-file projects like Pawn's #include.
+func (p *Parser) ParseFragment() (*ast.AppNode, error) {
+	app := &ast.AppNode{
+		PackageName: "com.gapk.app",
+		Props:       make(ast.Modifiers),
+	}
+	p.skipNewlines()
+
+	for {
+		p.skipNewlines()
+		if p.cur().Type == token.EOF {
+			break
+		}
+		tok := p.cur()
+		if tok.Type != token.Ident {
+			return nil, fmt.Errorf("line %d: unexpected token '%s' in fragment", tok.Line, tok.Literal)
+		}
+		switch tok.Literal {
+		case "import":
+			p.advance()
+			pathTok, err := p.expect(token.String)
+			if err != nil {
+				return nil, err
+			}
+			app.Imports = append(app.Imports, pathTok.Literal)
+		case "screen":
+			screen, err := p.parseScreen()
+			if err != nil {
+				return nil, err
+			}
+			app.Screens = append(app.Screens, screen)
+		case "package":
+			// Allow package declaration in fragments (ignored, main file wins)
+			p.advance()
+			if _, err := p.expect(token.Ident); err != nil {
+				return nil, err
+			}
+		default:
+			// State declaration
+			state, err := p.parseStateDecl()
+			if err != nil {
+				return nil, err
+			}
+			app.States = append(app.States, state)
+		}
+	}
+
+	return app, nil
+}
+
 func (p *Parser) ParseApp() (*ast.AppNode, error) {
 	app := &ast.AppNode{
 		PackageName: "com.gapk.app",
@@ -102,7 +154,22 @@ func (p *Parser) ParseApp() (*ast.AppNode, error) {
 		p.skipNewlines()
 	}
 
+	// Allow imports before app block
+	for p.cur().Type == token.Ident && p.cur().Literal == "import" {
+		p.advance()
+		pathTok, err := p.expect(token.String)
+		if err != nil {
+			return nil, err
+		}
+		app.Imports = append(app.Imports, pathTok.Literal)
+		p.skipNewlines()
+	}
+
 	if p.cur().Type != token.Ident || p.cur().Literal != "app" {
+		// Might be a fragment file (no app block) - parse as fragment
+		if len(app.Imports) > 0 || p.cur().Type == token.EOF {
+			return app, nil
+		}
 		return nil, fmt.Errorf("line %d: expected 'app \"Name\" {'", p.cur().Line)
 	}
 	p.advance()
@@ -130,7 +197,15 @@ func (p *Parser) ParseApp() (*ast.AppNode, error) {
 		}
 
 		tok := p.cur()
-		if tok.Type == token.Ident && tok.Literal == "screen" {
+		if tok.Type == token.Ident && tok.Literal == "import" {
+			// import "path/to/file.gapk"
+			p.advance()
+			pathTok, err := p.expect(token.String)
+			if err != nil {
+				return nil, err
+			}
+			app.Imports = append(app.Imports, pathTok.Literal)
+		} else if tok.Type == token.Ident && tok.Literal == "screen" {
 			screen, err := p.parseScreen()
 			if err != nil {
 				return nil, err

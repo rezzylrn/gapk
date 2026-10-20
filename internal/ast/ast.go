@@ -9,6 +9,7 @@ type AppNode struct {
 	Props       Modifiers
 	States      []StateDecl
 	Screens     []ScreenNode
+	Imports     []string // imported .gapk files (multi-file support)
 }
 
 type StateDecl struct {
