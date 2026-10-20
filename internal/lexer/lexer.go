@@ -135,7 +135,29 @@ func (l *Lexer) NextToken() token.Token {
 			l.advance()
 			var sb strings.Builder
 			for l.peek() != '"' && l.peek() != 0 {
-				sb.WriteRune(l.advance())
+				c := l.advance()
+				// Handle escape sequences: \" \\ \n \t
+				if c == '\\' {
+					next := l.peek()
+					switch next {
+					case '"':
+						sb.WriteRune('"')
+						l.advance()
+					case '\\':
+						sb.WriteRune('\\')
+						l.advance()
+					case 'n':
+						sb.WriteRune('\n')
+						l.advance()
+					case 't':
+						sb.WriteRune('\t')
+						l.advance()
+					default:
+						sb.WriteRune(c)
+					}
+				} else {
+					sb.WriteRune(c)
+				}
 			}
 			l.advance()
 			return token.Token{Type: token.String, Literal: sb.String(), Line: line}

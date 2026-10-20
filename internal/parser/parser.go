@@ -47,6 +47,7 @@ func (p *Parser) expect(t token.Type) (token.Token, error) {
 }
 
 // parseModifiers parses optional inline UI modifiers: [padding: 16, bg: "#1E293B", radius: 12]
+// For header_ modifiers, values support concatenation: [header_Authorization: "Bearer " + token]
 func (p *Parser) parseModifiers() (ast.Modifiers, error) {
 	mods := make(ast.Modifiers)
 	if p.cur().Type != token.LBracket {
@@ -66,12 +67,36 @@ func (p *Parser) parseModifiers() (ast.Modifiers, error) {
 		if _, err := p.expect(token.Colon); err != nil {
 			return nil, err
 		}
-		valTok := p.cur()
-		if valTok.Type != token.String && valTok.Type != token.Number && valTok.Type != token.Bool && valTok.Type != token.Ident {
-			return nil, fmt.Errorf("line %d: invalid modifier value '%s' for key '%s'", valTok.Line, valTok.Literal, keyTok.Literal)
+
+		// For header_ modifiers, parse as expression (supports "Bearer " + token)
+		if strings.HasPrefix(keyTok.Literal, "header_") {
+			parts, err := p.parseExpr()
+			if err != nil {
+				return nil, fmt.Errorf("line %d: invalid header value for key '%s'", p.cur().Line, keyTok.Literal)
+			}
+			// Convert to Dart string expression, store with special marker
+			var sb strings.Builder
+			sb.WriteString("\"")
+			for _, part := range parts {
+				if part.IsLiteral {
+					escaped := strings.ReplaceAll(part.Value, "\"", "\\\"")
+					sb.WriteString(escaped)
+				} else {
+					sb.WriteString("${" + part.Value + "}")
+				}
+			}
+			sb.WriteString("\"")
+			// Store with EXPR: prefix to indicate it's a Dart expression
+			mods[keyTok.Literal] = "EXPR:" + sb.String()
+		} else {
+			// Simple value for UI modifiers
+			valTok := p.cur()
+			if valTok.Type != token.String && valTok.Type != token.Number && valTok.Type != token.Bool && valTok.Type != token.Ident {
+				return nil, fmt.Errorf("line %d: invalid modifier value '%s' for key '%s'", valTok.Line, valTok.Literal, keyTok.Literal)
+			}
+			p.advance()
+			mods[keyTok.Literal] = valTok.Literal
 		}
-		p.advance()
-		mods[keyTok.Literal] = valTok.Literal
 
 		p.skipNewlines()
 		if p.cur().Type == token.Comma {

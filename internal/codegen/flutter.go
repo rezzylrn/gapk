@@ -682,7 +682,8 @@ func formatDartString(parts []ast.ExprPart) string {
 }
 
 // buildHeadersCode generates Dart headers map from action modifiers.
-// Modifiers like [header_Authorization: "Bearer xxx"] become headers: {"Authorization": "Bearer xxx"}
+// Modifiers like [header_Authorization: "Bearer " + token] become headers: {"Authorization": "Bearer ${token}"}
+// Values with EXPR: prefix are Dart expressions, others are quoted strings.
 // Always includes Content-Type: application/json.
 // Returns empty string if no headers, otherwise " headers: {...}" (no trailing comma).
 func buildHeadersCode(mods ast.Modifiers) string {
@@ -691,7 +692,15 @@ func buildHeadersCode(mods ast.Modifiers) string {
 	for k, v := range mods {
 		if strings.HasPrefix(k, "header_") {
 			headerName := strings.TrimPrefix(k, "header_")
-			headers = append(headers, fmt.Sprintf("%q: %q", headerName, v))
+			var dartVal string
+			if strings.HasPrefix(v, "EXPR:") {
+				// It's a Dart expression, use as-is
+				dartVal = strings.TrimPrefix(v, "EXPR:")
+			} else {
+				// Simple string, quote it
+				dartVal = fmt.Sprintf("%q", v)
+			}
+			headers = append(headers, fmt.Sprintf("%q: %s", headerName, dartVal))
 			if strings.ToLower(headerName) == "content-type" {
 				hasContentType = true
 			}
