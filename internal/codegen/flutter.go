@@ -14,7 +14,8 @@ func GenerateFlutterDart(app *ast.AppNode) string {
 
 	out.WriteString("import 'package:flutter/material.dart';\n")
 	out.WriteString("import 'dart:convert';\n")
-	out.WriteString("import 'package:http/http.dart' as http;\n\n")
+	out.WriteString("import 'package:http/http.dart' as http;\n")
+	out.WriteString("import 'package:shared_preferences/shared_preferences.dart';\n\n")
 
 	out.WriteString("void main() {\n")
 	out.WriteString(fmt.Sprintf("  runApp(const %s());\n", appClass))
@@ -623,8 +624,33 @@ func renderFlutterActions(out *strings.Builder, actions []ast.ActionNode, indent
 		case "navigate_back":
 			out.WriteString(fmt.Sprintf("%sNavigator.pop(context);\n", indent))
 		case "http_get":
-			out.WriteString(fmt.Sprintf("%shttp.get(Uri.parse(%q)).then((res) {\n%s  if (res.statusCode == 200) setState(() => %s = res.body);\n%s});\n",
-				indent, act.ExprValue, indent, act.TargetVar, indent))
+			// Build headers map from Props (e.g., [headers: "Authorization: Bearer xxx"])
+			// Props can contain "header_Authorization": "Bearer xxx" or similar
+			headersCode := buildHeadersCode(act.Props)
+			out.WriteString(fmt.Sprintf("%shttp.get(Uri.parse(%q)%s).then((res) {\n%s  if (res.statusCode == 200) setState(() => %s = res.body);\n%s});\n",
+				indent, act.ExprValue, headersCode, indent, act.TargetVar, indent))
+		case "http_post":
+			headersCode := buildHeadersCode(act.Props)
+			// Ensure Content-Type: application/json is set
+			out.WriteString(fmt.Sprintf("%shttp.post(Uri.parse(%q),%s body: %s).then((res) {\n%s  setState(() => %s = res.body);\n%s});\n",
+				indent, act.ExprValue, headersCode, act.BodyExpr, indent, act.TargetVar, indent))
+		case "json_get":
+			// Extract JSON field: json_get response "data.token" into token
+			// Generates: token = jsonDecode(response)["data"]["token"].toString()
+			pathParts := strings.Split(act.BodyExpr, ".")
+			var accessor strings.Builder
+			accessor.WriteString(fmt.Sprintf("jsonDecode(%s)", act.ExprValue))
+			for _, part := range pathParts {
+				accessor.WriteString(fmt.Sprintf("[%q]", part))
+			}
+			out.WriteString(fmt.Sprintf("%ssetState(() { %s = (%s)?.toString() ?? \"\"; });\n",
+				indent, act.TargetVar, accessor.String()))
+		case "storage_set":
+			out.WriteString(fmt.Sprintf("%sSharedPreferences.getInstance().then((prefs) => prefs.setString(%q, %s.toString()));\n",
+				indent, act.ExprValue, act.BodyExpr))
+		case "storage_get":
+			out.WriteString(fmt.Sprintf("%sSharedPreferences.getInstance().then((prefs) => setState(() => %s = prefs.getString(%q) ?? \"\"));\n",
+				indent, act.TargetVar, act.ExprValue))
 		case "if":
 			out.WriteString(fmt.Sprintf("%sif (%s) {\n", indent, act.CondExpr))
 			renderFlutterActions(out, act.ThenActions, indent+"  ")
@@ -649,6 +675,30 @@ func formatDartString(parts []ast.ExprPart) string {
 	}
 	sb.WriteString("\"")
 	return sb.String()
+}
+
+// buildHeadersCode generates Dart headers map from action modifiers.
+// Modifiers like [header_Authorization: "Bearer xxx"] become headers: {"Authorization": "Bearer xxx"}
+// Always includes Content-Type: application/json for POST.
+func buildHeadersCode(mods ast.Modifiers) string {
+	var headers []string
+	hasContentType := false
+	for k, v := range mods {
+		if strings.HasPrefix(k, "header_") {
+			headerName := strings.TrimPrefix(k, "header_")
+			headers = append(headers, fmt.Sprintf("%q: %q", headerName, v))
+			if strings.ToLower(headerName) == "content-type" {
+				hasContentType = true
+			}
+		}
+	}
+	if !hasContentType {
+		headers = append(headers, `"Content-Type": "application/json"`)
+	}
+	if len(headers) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" headers: {%s},", strings.Join(headers, ", "))
 }
 
 func formatRawExpr(parts []ast.ExprPart) string {

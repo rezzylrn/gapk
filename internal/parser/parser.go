@@ -654,7 +654,99 @@ func (p *Parser) parseAction() (ast.ActionNode, error) {
 		if err != nil {
 			return ast.ActionNode{}, err
 		}
-		return ast.ActionNode{Kind: "http_get", ExprValue: urlTok.Literal, TargetVar: targetTok.Literal}, nil
+		mods, err := p.parseModifiers()
+		if err != nil {
+			return ast.ActionNode{}, err
+		}
+		return ast.ActionNode{Kind: "http_get", ExprValue: urlTok.Literal, TargetVar: targetTok.Literal, Props: mods}, nil
+
+	case "http_post":
+		p.advance()
+		urlTok, err := p.expect(token.String)
+		if err != nil {
+			return ast.ActionNode{}, err
+		}
+		// Body can be a string (JSON) or identifier (variable holding JSON)
+		bodyTok := p.cur()
+		var bodyExpr string
+		if bodyTok.Type == token.String {
+			bodyExpr = fmt.Sprintf("%q", bodyTok.Literal)
+			p.advance()
+		} else if bodyTok.Type == token.Ident {
+			bodyExpr = bodyTok.Literal
+			p.advance()
+		} else {
+			return ast.ActionNode{}, fmt.Errorf("line %d: expected JSON body string or variable after URL in http_post", bodyTok.Line)
+		}
+		intoTok, err := p.expect(token.Ident)
+		if err != nil || intoTok.Literal != "into" {
+			return ast.ActionNode{}, fmt.Errorf("line %d: expected 'into' after body in http_post", intoTok.Line)
+		}
+		targetTok, err := p.expect(token.Ident)
+		if err != nil {
+			return ast.ActionNode{}, err
+		}
+		mods, err := p.parseModifiers()
+		if err != nil {
+			return ast.ActionNode{}, err
+		}
+		return ast.ActionNode{Kind: "http_post", ExprValue: urlTok.Literal, BodyExpr: bodyExpr, TargetVar: targetTok.Literal, Props: mods}, nil
+
+	case "json_get":
+		p.advance()
+		srcTok, err := p.expect(token.Ident)
+		if err != nil {
+			return ast.ActionNode{}, err
+		}
+		pathTok, err := p.expect(token.String)
+		if err != nil {
+			return ast.ActionNode{}, err
+		}
+		intoTok, err := p.expect(token.Ident)
+		if err != nil || intoTok.Literal != "into" {
+			return ast.ActionNode{}, fmt.Errorf("line %d: expected 'into' after path in json_get", intoTok.Line)
+		}
+		targetTok, err := p.expect(token.Ident)
+		if err != nil {
+			return ast.ActionNode{}, err
+		}
+		return ast.ActionNode{Kind: "json_get", ExprValue: srcTok.Literal, BodyExpr: pathTok.Literal, TargetVar: targetTok.Literal}, nil
+
+	case "storage_set":
+		p.advance()
+		keyTok, err := p.expect(token.String)
+		if err != nil {
+			return ast.ActionNode{}, err
+		}
+		// Value can be string literal or identifier
+		valTok := p.cur()
+		var valExpr string
+		if valTok.Type == token.String {
+			valExpr = fmt.Sprintf("%q", valTok.Literal)
+			p.advance()
+		} else if valTok.Type == token.Ident {
+			valExpr = valTok.Literal
+			p.advance()
+		} else {
+			return ast.ActionNode{}, fmt.Errorf("line %d: expected value after key in storage_set", valTok.Line)
+		}
+		return ast.ActionNode{Kind: "storage_set", ExprValue: keyTok.Literal, BodyExpr: valExpr}, nil
+
+	case "storage_get":
+		p.advance()
+		keyTok, err := p.expect(token.String)
+		if err != nil {
+			return ast.ActionNode{}, err
+		}
+		intoTok, err := p.expect(token.Ident)
+		if err != nil || intoTok.Literal != "into" {
+			return ast.ActionNode{}, fmt.Errorf("line %d: expected 'into' after key in storage_get", intoTok.Line)
+		}
+		targetTok, err := p.expect(token.Ident)
+		if err != nil {
+			return ast.ActionNode{}, err
+		}
+		return ast.ActionNode{Kind: "storage_get", ExprValue: keyTok.Literal, TargetVar: targetTok.Literal}, nil
 
 	case "if":
 		p.advance()

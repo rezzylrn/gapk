@@ -47,12 +47,13 @@ type ExprPart struct {
 }
 
 type ActionNode struct {
-	Kind        string       // "assign", "list_add", "list_remove", "snackbar", "toast", "dialog", "navigate", "navigate_back", "http_get", "if"
-	TargetVar   string       // state variable for assign / list_add / list_remove / http_get
-	ExprValue   string       // RHS expression or route name or URL
+	Kind        string       // "assign", "list_add", "list_remove", "snackbar", "toast", "dialog", "navigate", "navigate_back", "http_get", "http_post", "json_get", "storage_set", "storage_get", "if"
+	TargetVar   string       // state variable for assign / list_add / list_remove / http_get / http_post / json_get / storage_get
+	ExprValue   string       // RHS expression or route name or URL or JSON path or storage key
 	TitleExpr   []ExprPart   // dialog title
 	MsgExpr     []ExprPart   // snackbar / toast / dialog message
-	Props       Modifiers    // optional action modifiers
+	Props       Modifiers    // optional action modifiers (headers for http, etc.)
+	BodyExpr    string       // JSON body for http_post
 	CondExpr    string       // condition for "if"
 	ThenActions []ActionNode // body of "if"
 	ElseActions []ActionNode // body of "else"
