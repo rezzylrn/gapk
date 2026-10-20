@@ -137,6 +137,7 @@ dependencies:
   flutter:
     sdk: flutter
   http: ^1.2.0
+  shared_preferences: ^2.2.0
 
 flutter:
   uses-material-design: true
