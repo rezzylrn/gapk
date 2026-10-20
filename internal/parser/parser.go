@@ -666,18 +666,25 @@ func (p *Parser) parseAction() (ast.ActionNode, error) {
 		if err != nil {
 			return ast.ActionNode{}, err
 		}
-		// Body can be a string (JSON) or identifier (variable holding JSON)
-		bodyTok := p.cur()
-		var bodyExpr string
-		if bodyTok.Type == token.String {
-			bodyExpr = fmt.Sprintf("%q", bodyTok.Literal)
-			p.advance()
-		} else if bodyTok.Type == token.Ident {
-			bodyExpr = bodyTok.Literal
-			p.advance()
-		} else {
-			return ast.ActionNode{}, fmt.Errorf("line %d: expected JSON body string or variable after URL in http_post", bodyTok.Line)
+		// Body can be a string, identifier, or concatenated expression
+		bodyParts, err := p.parseExpr()
+		if err != nil {
+			return ast.ActionNode{}, fmt.Errorf("line %d: expected JSON body after URL in http_post", p.cur().Line)
 		}
+		// Convert ExprParts to Dart string expression
+		var bodySb strings.Builder
+		bodySb.WriteString("\"")
+		for _, part := range bodyParts {
+			if part.IsLiteral {
+				// Escape quotes in literal
+				escaped := strings.ReplaceAll(part.Value, "\"", "\\\"")
+				bodySb.WriteString(escaped)
+			} else {
+				bodySb.WriteString("${" + part.Value + "}")
+			}
+		}
+		bodySb.WriteString("\"")
+		bodyExpr := bodySb.String()
 		intoTok, err := p.expect(token.Ident)
 		if err != nil || intoTok.Literal != "into" {
 			return ast.ActionNode{}, fmt.Errorf("line %d: expected 'into' after body in http_post", intoTok.Line)

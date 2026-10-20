@@ -624,15 +624,19 @@ func renderFlutterActions(out *strings.Builder, actions []ast.ActionNode, indent
 		case "navigate_back":
 			out.WriteString(fmt.Sprintf("%sNavigator.pop(context);\n", indent))
 		case "http_get":
-			// Build headers map from Props (e.g., [headers: "Authorization: Bearer xxx"])
-			// Props can contain "header_Authorization": "Bearer xxx" or similar
+			// Build headers map from Props (e.g., [header_Authorization: "Bearer xxx"])
 			headersCode := buildHeadersCode(act.Props)
+			if headersCode != "" {
+				headersCode = "," + headersCode
+			}
 			out.WriteString(fmt.Sprintf("%shttp.get(Uri.parse(%q)%s).then((res) {\n%s  if (res.statusCode == 200) setState(() => %s = res.body);\n%s});\n",
 				indent, act.ExprValue, headersCode, indent, act.TargetVar, indent))
 		case "http_post":
 			headersCode := buildHeadersCode(act.Props)
-			// Ensure Content-Type: application/json is set
-			out.WriteString(fmt.Sprintf("%shttp.post(Uri.parse(%q),%s body: %s).then((res) {\n%s  setState(() => %s = res.body);\n%s});\n",
+			if headersCode != "" {
+				headersCode = "," + headersCode
+			}
+			out.WriteString(fmt.Sprintf("%shttp.post(Uri.parse(%q)%s, body: %s).then((res) {\n%s  setState(() => %s = res.body);\n%s});\n",
 				indent, act.ExprValue, headersCode, act.BodyExpr, indent, act.TargetVar, indent))
 		case "json_get":
 			// Extract JSON field: json_get response "data.token" into token
@@ -679,7 +683,8 @@ func formatDartString(parts []ast.ExprPart) string {
 
 // buildHeadersCode generates Dart headers map from action modifiers.
 // Modifiers like [header_Authorization: "Bearer xxx"] become headers: {"Authorization": "Bearer xxx"}
-// Always includes Content-Type: application/json for POST.
+// Always includes Content-Type: application/json.
+// Returns empty string if no headers, otherwise " headers: {...}" (no trailing comma).
 func buildHeadersCode(mods ast.Modifiers) string {
 	var headers []string
 	hasContentType := false
@@ -698,7 +703,7 @@ func buildHeadersCode(mods ast.Modifiers) string {
 	if len(headers) == 0 {
 		return ""
 	}
-	return fmt.Sprintf(" headers: {%s},", strings.Join(headers, ", "))
+	return fmt.Sprintf(" headers: {%s}", strings.Join(headers, ", "))
 }
 
 func formatRawExpr(parts []ast.ExprPart) string {

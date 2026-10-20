@@ -7,6 +7,7 @@ app "SmartMedika Test" [theme: "light", primary: "#0E6B5C"] {
     token := ""
     apiResponse := ""
     loginStatus := ""
+    loginBody := ""
 
     screen "Login" [padding: 24] {
         column [spacing: 16] {
@@ -17,18 +18,15 @@ app "SmartMedika Test" [theme: "light", primary: "#0E6B5C"] {
             input password "Password" [hint: "Masukkan password"]
 
             button "Login" [bg: "#0E6B5C"] {
-                // POST login with JSON body
-                http_post "https://api.smartmedika.id/auth/login" "{\"nisn\": \"" + nisn + "\", \"password\": \"" + password + "\"}" into apiResponse
-                // Extract token from JSON response
+                loginBody = nisn
+                http_post "https://smartmedika-backend.vercel.app/api/auth/login" loginBody into apiResponse
                 json_get apiResponse "data.token" into token
-                // Save token to persistent storage
                 storage_set "auth_token" token
-                // Check if login succeeded
                 if token != "" {
                     loginStatus = "Login berhasil!"
                     navigate "Home"
                 } else {
-                    loginStatus = "Login gagal, cek NISN/password"
+                    loginStatus = "Login gagal"
                 }
             }
 
@@ -44,9 +42,8 @@ app "SmartMedika Test" [theme: "light", primary: "#0E6B5C"] {
             text "Selamat datang!" [size: 20, weight: "bold"]
 
             button "Load Materi" [bg: "#0E6B5C"] {
-                // GET with auth header from storage
                 storage_get "auth_token" into token
-                http_get "https://api.smartmedika.id/materi" into apiResponse [header_Authorization: "Bearer " + token]
+                http_get "https://smartmedika-backend.vercel.app/api/materi" into apiResponse [header_Authorization: "Bearer token"]
                 snackbar "Materi dimuat"
             }
 
