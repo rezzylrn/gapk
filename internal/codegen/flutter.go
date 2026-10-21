@@ -589,7 +589,7 @@ func renderFlutterWidget(out *strings.Builder, w ast.WidgetNode, indent string) 
 		if bg := w.Props["bg"]; bg != "" {
 			out.WriteString(fmt.Sprintf("%s  style: %s.styleFrom(backgroundColor: %s),\n", indent, btnWidget, dartColor(bg, "null")))
 		}
-		out.WriteString(fmt.Sprintf("%s  onPressed: () {\n", indent))
+		out.WriteString(fmt.Sprintf("%s  onPressed: () async {\n", indent))
 		renderFlutterActions(out, w.Actions, indent+"    ")
 		out.WriteString(fmt.Sprintf("%s  },\n", indent))
 		out.WriteString(fmt.Sprintf("%s  child: Text(%s),\n", indent, formatDartString(w.TextExpr)))
@@ -629,26 +629,26 @@ func renderFlutterActions(out *strings.Builder, actions []ast.ActionNode, indent
 			if headersCode != "" {
 				headersCode = "," + headersCode
 			}
-			out.WriteString(fmt.Sprintf("%shttp.get(Uri.parse(%q)%s).then((res) {\n%s  if (res.statusCode == 200) setState(() => %s = res.body);\n%s});\n",
-				indent, act.ExprValue, headersCode, indent, act.TargetVar, indent))
+			out.WriteString(fmt.Sprintf("%stry {\n%s  final _res = await http.get(Uri.parse(%q)%s);\n%s  if (_res.statusCode == 200) setState(() => %s = _res.body); else setState(() => %s = \"\");\n%s} catch (_) { setState(() => %s = \"\"); }\n",
+				indent, indent, act.ExprValue, headersCode, indent, act.TargetVar, act.TargetVar, indent, act.TargetVar))
 		case "http_post":
 			headersCode := buildHeadersCode(act.Props)
 			if headersCode != "" {
 				headersCode = "," + headersCode
 			}
-			out.WriteString(fmt.Sprintf("%shttp.post(Uri.parse(%q)%s, body: %s).then((res) {\n%s  setState(() => %s = res.body);\n%s});\n",
-				indent, act.ExprValue, headersCode, act.BodyExpr, indent, act.TargetVar, indent))
+			out.WriteString(fmt.Sprintf("%stry {\n%s  final _res = await http.post(Uri.parse(%q)%s, body: %s);\n%s  setState(() => %s = _res.body);\n%s} catch (_) { setState(() => %s = \"\"); }\n",
+				indent, indent, act.ExprValue, headersCode, act.BodyExpr, indent, act.TargetVar, indent, act.TargetVar))
 		case "json_get":
 			// Extract JSON field: json_get response "data.token" into token
-			// Generates: token = jsonDecode(response)["data"]["token"].toString()
+			// Safe: wrapped in try-catch, invalid/empty JSON -> empty string (no crash)
 			pathParts := strings.Split(act.BodyExpr, ".")
 			var accessor strings.Builder
 			accessor.WriteString(fmt.Sprintf("jsonDecode(%s)", act.ExprValue))
 			for _, part := range pathParts {
 				accessor.WriteString(fmt.Sprintf("[%q]", part))
 			}
-			out.WriteString(fmt.Sprintf("%ssetState(() { %s = (%s)?.toString() ?? \"\"; });\n",
-				indent, act.TargetVar, accessor.String()))
+			out.WriteString(fmt.Sprintf("%ssetState(() { try { %s = (%s)?.toString() ?? \"\"; } catch (_) { %s = \"\"; } });\n",
+				indent, act.TargetVar, accessor.String(), act.TargetVar))
 		case "storage_set":
 			out.WriteString(fmt.Sprintf("%sSharedPreferences.getInstance().then((prefs) => prefs.setString(%q, %s.toString()));\n",
 				indent, act.ExprValue, act.BodyExpr))

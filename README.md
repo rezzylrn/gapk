@@ -30,3 +30,26 @@ Flags:
   --target=flutter                  Output Flutter project / lib/main.dart (default)
   --target=compose                  Output Android Kotlin Jetpack Compose project
 ```
+
+## Flutter Target Dependencies
+
+Generated Flutter projects require these pub dependencies (auto-added to `pubspec.yaml`):
+
+| Package | Version | Used by |
+|---------|---------|---------|
+| `http` | `^1.2.0` | `http_get`, `http_post` actions |
+| `shared_preferences` | `^2.2.0` | `storage_set`, `storage_get` actions |
+
+### Android: INTERNET Permission (REQUIRED)
+
+Apps using `http_get`/`http_post` **will crash on startup** without this. Add to `android/app/src/main/AndroidManifest.xml`:
+
+```xml
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <application ...>
+```
+
+### Async HTTP (v0.3.0+)
+
+`http_get`/`http_post` now use `await` with try-catch. Button `onPressed` handlers are generated as `async`. Failed requests set the target variable to `""` instead of crashing. `json_get` is null-safe and won't crash on invalid JSON.
