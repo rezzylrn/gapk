@@ -16,7 +16,10 @@ func TestParseEcommerce(t *testing.T) {
 		t.Fatalf("failed to read test file: %v", err)
 	}
 
-	tokens := lexer.Tokenize(string(data))
+	tokens, err := lexer.Tokenize(string(data))
+	if err != nil {
+		t.Fatalf("failed to tokenize: %v", err)
+	}
 	p := parser.New(tokens)
 	app, err := p.ParseApp()
 	if err != nil {

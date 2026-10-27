@@ -16,7 +16,10 @@ func TestTokenize(t *testing.T) {
 		active := true
 	}
 	`
-	tokens := lexer.Tokenize(input)
+	tokens, err := lexer.Tokenize(input)
+	if err != nil {
+		t.Fatalf("unexpected tokenize error: %v", err)
+	}
 	if len(tokens) == 0 {
 		t.Fatal("expected tokens, got none")
 	}

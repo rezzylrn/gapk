@@ -1,6 +1,7 @@
 package lexer
 
 import (
+	"fmt"
 	"strings"
 	"unicode"
 
@@ -11,6 +12,7 @@ type Lexer struct {
 	input []rune
 	pos   int
 	line  int
+	err   error
 }
 
 func New(input string) *Lexer {
@@ -44,7 +46,17 @@ func (l *Lexer) advance() rune {
 	return ch
 }
 
+func (l *Lexer) fail(format string, args ...any) token.Token {
+	if l.err == nil {
+		l.err = fmt.Errorf("line %d: %s", l.line, fmt.Sprintf(format, args...))
+	}
+	return token.Token{Type: token.EOF, Literal: "", Line: l.line}
+}
+
 func (l *Lexer) NextToken() token.Token {
+	if l.err != nil {
+		return token.Token{Type: token.EOF, Literal: "", Line: l.line}
+	}
 	for l.pos < len(l.input) {
 		ch := l.peek()
 
@@ -80,6 +92,12 @@ func (l *Lexer) NextToken() token.Token {
 		case ']':
 			l.advance()
 			return token.Token{Type: token.RBracket, Literal: "]", Line: l.line}
+		case '(':
+			l.advance()
+			return token.Token{Type: token.LParen, Literal: "(", Line: l.line}
+		case ')':
+			l.advance()
+			return token.Token{Type: token.RParen, Literal: ")", Line: l.line}
 		case ',':
 			l.advance()
 			return token.Token{Type: token.Comma, Literal: ",", Line: l.line}
@@ -92,15 +110,54 @@ func (l *Lexer) NextToken() token.Token {
 		case '*':
 			l.advance()
 			return token.Token{Type: token.Star, Literal: "*", Line: l.line}
+		case '%':
+			l.advance()
+			return token.Token{Type: token.Mod, Literal: "%", Line: l.line}
 		case '/':
 			l.advance()
 			return token.Token{Type: token.Slash, Literal: "/", Line: l.line}
-		case '>':
+		}
+
+		if ch == '>' {
+			line := l.line
 			l.advance()
-			return token.Token{Type: token.Gt, Literal: ">", Line: l.line}
-		case '<':
+			if l.peek() == '=' {
+				l.advance()
+				return token.Token{Type: token.Gte, Literal: ">=", Line: line}
+			}
+			return token.Token{Type: token.Gt, Literal: ">", Line: line}
+		}
+
+		if ch == '<' {
+			line := l.line
 			l.advance()
-			return token.Token{Type: token.Lt, Literal: "<", Line: l.line}
+			if l.peek() == '=' {
+				l.advance()
+				return token.Token{Type: token.Lte, Literal: "<=", Line: line}
+			}
+			return token.Token{Type: token.Lt, Literal: "<", Line: line}
+		}
+
+		if ch == '&' {
+			line := l.line
+			if l.peekNext() != '&' {
+				l.advance()
+				return l.fail("single '&' is not an operator, use '&&'")
+			}
+			l.advance()
+			l.advance()
+			return token.Token{Type: token.And, Literal: "&&", Line: line}
+		}
+
+		if ch == '|' {
+			line := l.line
+			if l.peekNext() != '|' {
+				l.advance()
+				return l.fail("single '|' is not an operator, use '||'")
+			}
+			l.advance()
+			l.advance()
+			return token.Token{Type: token.Or, Literal: "||", Line: line}
 		}
 
 		if ch == ':' {
@@ -123,20 +180,30 @@ func (l *Lexer) NextToken() token.Token {
 			return token.Token{Type: token.Assign, Literal: "=", Line: line}
 		}
 
-		if ch == '!' && l.peekNext() == '=' {
+		if ch == '!' {
 			line := l.line
 			l.advance()
-			l.advance()
-			return token.Token{Type: token.Neq, Literal: "!=", Line: line}
+			if l.peek() == '=' {
+				l.advance()
+				return token.Token{Type: token.Neq, Literal: "!=", Line: line}
+			}
+			return token.Token{Type: token.Not, Literal: "!", Line: line}
 		}
 
 		if ch == '"' {
 			line := l.line
 			l.advance()
 			var sb strings.Builder
-			for l.peek() != '"' && l.peek() != 0 {
-				c := l.advance()
-				// Handle escape sequences: \" \\ \n \t
+			for {
+				c := l.peek()
+				if c == 0 || c == '\n' {
+					return l.fail("unterminated string literal")
+				}
+				if c == '"' {
+					break
+				}
+				l.advance()
+				// Handle escape sequences: \" \\ \n \t \r
 				if c == '\\' {
 					next := l.peek()
 					switch next {
@@ -152,6 +219,9 @@ func (l *Lexer) NextToken() token.Token {
 					case 't':
 						sb.WriteRune('\t')
 						l.advance()
+					case 'r':
+						sb.WriteRune('\r')
+						l.advance()
 					default:
 						sb.WriteRune(c)
 					}
@@ -166,10 +236,21 @@ func (l *Lexer) NextToken() token.Token {
 		if unicode.IsDigit(ch) {
 			line := l.line
 			var sb strings.Builder
+			dots := 0
 			for unicode.IsDigit(l.peek()) || l.peek() == '.' {
+				if l.peek() == '.' {
+					dots++
+				}
 				sb.WriteRune(l.advance())
 			}
-			return token.Token{Type: token.Number, Literal: sb.String(), Line: line}
+			lit := sb.String()
+			if dots > 1 {
+				return l.fail("invalid number %q", lit)
+			}
+			if strings.HasSuffix(lit, ".") {
+				return l.fail("invalid number %q: digits required after '.'", lit)
+			}
+			return token.Token{Type: token.Number, Literal: lit, Line: line}
 		}
 
 		if unicode.IsLetter(ch) || ch == '_' {
@@ -185,13 +266,19 @@ func (l *Lexer) NextToken() token.Token {
 			return token.Token{Type: token.Ident, Literal: lit, Line: line}
 		}
 
+		// Anything else is a real error now. Silently dropping a character
+		// used to turn e.g. "a && b" into "a b" and change program meaning.
+		bad := ch
 		l.advance()
+		return l.fail("unexpected character %q", bad)
 	}
 
 	return token.Token{Type: token.EOF, Literal: "", Line: l.line}
 }
 
-func Tokenize(source string) []token.Token {
+// Tokenize scans the whole source. It returns an error instead of a partial
+// token stream so callers never parse a silently mangled program.
+func Tokenize(source string) ([]token.Token, error) {
 	l := New(source)
 	var tokens []token.Token
 	for {
@@ -201,5 +288,8 @@ func Tokenize(source string) []token.Token {
 			break
 		}
 	}
-	return tokens
+	if l.err != nil {
+		return nil, l.err
+	}
+	return tokens, nil
 }

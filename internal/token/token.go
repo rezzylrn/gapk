@@ -24,6 +24,14 @@ const (
 	Neq      Type = "!="
 	Gt       Type = ">"
 	Lt       Type = "<"
+	Gte      Type = ">="
+	Lte      Type = "<="
+	And      Type = "&&"
+	Or       Type = "||"
+	Not      Type = "!"
+	LParen   Type = "("
+	RParen   Type = ")"
+	Mod      Type = "%"
 	Newline  Type = "NEWLINE"
 )
 
