@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: Format check
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./...
+      - name: Examples transpile
+        run: |
+          go build -o gapk ./cmd/gapk
+          ./gapk check examples/ecommerce.gapk
+          ./gapk check examples/smartmedika-test.gapk
+          ./gapk transpile examples/ecommerce.gapk > /dev/null
+          ./gapk transpile --target=compose examples/ecommerce.gapk > /dev/null
+      - name: Compose target rejects unsupported features
+        run: |
+          if ./gapk transpile --target=compose examples/smartmedika-test.gapk 2>err.txt; then
+            echo "expected compose transpile of smartmedika-test.gapk to fail (http/storage unsupported)"; exit 1
+          fi
+          grep -q "not supported" err.txt
