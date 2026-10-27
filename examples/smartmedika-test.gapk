@@ -7,7 +7,6 @@ app "SmartMedika Test" [theme: "light", primary: "#0E6B5C"] {
     token := ""
     apiResponse := ""
     loginStatus := ""
-    loginBody := ""
 
     screen "Login" [padding: 24] {
         column [spacing: 16] {
@@ -18,8 +17,7 @@ app "SmartMedika Test" [theme: "light", primary: "#0E6B5C"] {
             input password "Password" [hint: "Masukkan password"]
 
             button "Login" [bg: "#0E6B5C"] {
-                loginBody = nisn
-                http_post "https://smartmedika-backend.vercel.app/api/auth/login" loginBody into apiResponse
+                http_post "https://smartmedika-backend.vercel.app/api/auth/login" "{\"identifier\": \"" + nisn + "\", \"password\": \"" + password + "\"}" into apiResponse
                 json_get apiResponse "data.token" into token
                 storage_set "auth_token" token
                 if token != "" {
@@ -43,7 +41,7 @@ app "SmartMedika Test" [theme: "light", primary: "#0E6B5C"] {
 
             button "Load Materi" [bg: "#0E6B5C"] {
                 storage_get "auth_token" into token
-                http_get "https://smartmedika-backend.vercel.app/api/materi" into apiResponse [header_Authorization: "Bearer token"]
+                http_get "https://smartmedika-backend.vercel.app/api/materi" into apiResponse [header_Authorization: "Bearer " + token]
                 snackbar "Materi dimuat"
             }
 

@@ -11,39 +11,64 @@ import (
 	"github.com/gapk-lang/gapk/internal/codegen"
 	"github.com/gapk-lang/gapk/internal/lexer"
 	"github.com/gapk-lang/gapk/internal/parser"
+	"github.com/gapk-lang/gapk/internal/validate"
 )
 
 func ParseFile(path string) (*ast.AppNode, error) {
-	return parseFileRecursive(path, make(map[string]bool))
+	app, err := parseFileRecursive(path, make(map[string]bool), make(map[string]bool))
+	if err != nil {
+		return nil, err
+	}
+	if err := validate.ValidateApp(app); err != nil {
+		return nil, err
+	}
+	return app, nil
 }
 
-func parseFileRecursive(path string, visited map[string]bool) (*ast.AppNode, error) {
-	// Resolve absolute path to avoid duplicates
+func parseFileRecursive(path string, visiting, done map[string]bool) (*ast.AppNode, error) {
+	// Resolve absolute path to avoid duplicates.
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
 	}
-	if visited[absPath] {
+	if visiting[absPath] {
 		return nil, fmt.Errorf("circular import detected: %s", path)
 	}
-	visited[absPath] = true
+	if done[absPath] {
+		// Diamond import: the file was already parsed through another
+		// branch and its states/screens are merged by that branch.
+		// Returning an empty app here is correct; treating it as a
+		// cycle was the old (wrong) behavior.
+		return &ast.AppNode{PackageName: "com.gapk.app", Props: make(ast.Modifiers)}, nil
+	}
+	visiting[absPath] = true
+	defer func() {
+		delete(visiting, absPath)
+		done[absPath] = true
+	}()
 
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	tokens := lexer.Tokenize(string(data))
+	tokens, err := lexer.Tokenize(string(data))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	p := parser.New(tokens)
 
-	// Try ParseApp first (for main file), fallback to ParseFragment (for imports)
+	// ParseApp handles files with an app block. Files without one
+	// (fragments: only imports/screens/states) must fall back to
+	// ParseFragment — including files that START with imports, where
+	// ParseApp returns early with an empty app instead of an error.
 	app, err := p.ParseApp()
-	if err != nil {
-		// If it's not the main file and ParseApp failed, try as fragment
+	if err != nil || app.AppName == "" {
 		p2 := parser.New(tokens)
-		app, err = p2.ParseFragment()
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", path, err)
+		frag, ferr := p2.ParseFragment()
+		if ferr != nil {
+			return nil, fmt.Errorf("%s: %w", path, ferr)
 		}
+		app, err = frag, nil
 	}
 
 	// Recursively parse imports and merge
@@ -53,7 +78,7 @@ func parseFileRecursive(path string, visited map[string]bool) (*ast.AppNode, err
 		if !filepath.IsAbs(impPath) {
 			impPath = filepath.Join(baseDir, impPath)
 		}
-		imported, err := parseFileRecursive(impPath, visited)
+		imported, err := parseFileRecursive(impPath, visiting, done)
 		if err != nil {
 			return nil, err
 		}
@@ -86,7 +111,19 @@ func parseFileRecursive(path string, visited map[string]bool) (*ast.AppNode, err
 	return app, nil
 }
 
+// BuildOptions controls `gapk build` behavior.
+type BuildOptions struct {
+	// Release builds a release APK instead of a debug APK.
+	Release bool
+	// Force allows `flutter create` into a non-empty output directory.
+	Force bool
+}
+
 func BuildProject(inputFile, outDir, target string) error {
+	return BuildProjectOptions(inputFile, outDir, target, BuildOptions{})
+}
+
+func BuildProjectOptions(inputFile, outDir, target string, opts BuildOptions) error {
 	app, err := ParseFile(inputFile)
 	if err != nil {
 		return err
@@ -97,25 +134,88 @@ func BuildProject(inputFile, outDir, target string) error {
 			return err
 		}
 		fmt.Printf("[gapk] generated Kotlin Compose project in %s\n", outDir)
+		fmt.Println("[gapk] compose target is a preview: create an Android Studio \"Empty Compose Activity\" project, replace MainActivity.kt with the generated file, and build from Android Studio or Gradle.")
 		return nil
 	}
 
+	flutterBin, flutterErr := exec.LookPath("flutter")
+	if flutterErr != nil {
+		// No Flutter toolchain: emit the files we can and say plainly
+		// what is missing instead of pretending an APK was built.
+		if err := writeFlutterScaffold(app, outDir); err != nil {
+			return err
+		}
+		fmt.Printf("[gapk] generated Flutter project files in %s\n", outDir)
+		fmt.Println("[gapk] 'flutter' CLI not found in PATH, so no APK was built.")
+		fmt.Println("[gapk] To build: install Flutter, then run: flutter create --platforms=android <dir> && cp <dir>/lib/main.dart <created>/lib/main.dart && flutter build apk")
+		return nil
+	}
+
+	// With a Flutter toolchain, scaffold a real project with
+	// `flutter create` (android/ + gradle wrapper included), then
+	// replace the generated main.dart/pubspec with gapk output. The
+	// old scaffold wrote only pubspec.yaml + main.dart, so
+	// `flutter build apk` could never succeed in that directory.
+	if entries, err := os.ReadDir(outDir); err == nil && len(entries) > 0 && !opts.Force {
+		return fmt.Errorf("output directory %s is not empty (use --force to overwrite, or pick another directory)", outDir)
+	}
+	pkgSlug := flutterProjectName(app.AppName)
+	createArgs := []string{"create", "--project-name", pkgSlug, "--org", app.PackageName, "--platforms", "android", outDir}
+	if opts.Force {
+		createArgs = append(createArgs, "--overwrite")
+	}
+	fmt.Printf("[gapk] scaffolding Flutter project with %s...\n", flutterBin)
+	createCmd := exec.Command(flutterBin, createArgs...)
+	createCmd.Stdout = os.Stdout
+	createCmd.Stderr = os.Stderr
+	if err := createCmd.Run(); err != nil {
+		return fmt.Errorf("flutter create failed: %w", err)
+	}
 	if err := writeFlutterScaffold(app, outDir); err != nil {
 		return err
 	}
-	fmt.Printf("[gapk] generated Flutter project in %s\n", outDir)
-
-	if flutterBin, err := exec.LookPath("flutter"); err == nil {
-		fmt.Printf("[gapk] compiling APK with %s build apk...\n", flutterBin)
-		cmd := exec.Command(flutterBin, "build", "apk", "--debug")
-		cmd.Dir = outDir
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
+	needsHTTP, _ := codegen.FlutterDeps(app)
+	if needsHTTP {
+		if err := ensureInternetPermission(filepath.Join(outDir, "android", "app", "src", "main", "AndroidManifest.xml")); err != nil {
+			return err
+		}
 	}
 
-	fmt.Println("[gapk] 'flutter' CLI not found in PATH; project files are ready in", outDir)
-	return nil
+	mode := "--debug"
+	if opts.Release {
+		mode = "--release"
+	}
+	fmt.Printf("[gapk] compiling APK with %s build apk %s...\n", flutterBin, mode)
+	cmd := exec.Command(flutterBin, "build", "apk", mode)
+	cmd.Dir = outDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// flutterProjectName derives a valid Dart package name from the app name.
+func flutterProjectName(appName string) string {
+	return strings.ToLower(codegen.SanitizeIdent(appName))
+}
+
+// ensureInternetPermission adds the INTERNET permission to an Android
+// manifest if it is not already there. Apps using http_get/http_post
+// fail network requests without it.
+func ensureInternetPermission(manifestPath string) error {
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return err
+	}
+	if strings.Contains(string(data), "android.permission.INTERNET") {
+		return nil
+	}
+	const marker = "<application"
+	idx := strings.Index(string(data), marker)
+	if idx < 0 {
+		return fmt.Errorf("AndroidManifest.xml has no <application> element, cannot add INTERNET permission")
+	}
+	patched := string(data)[:idx] + "    <uses-permission android:name=\"android.permission.INTERNET\"/>\n    " + string(data)[idx:]
+	return os.WriteFile(manifestPath, []byte(patched), 0644)
 }
 
 func writeFlutterScaffold(app *ast.AppNode, outDir string) error {
@@ -124,7 +224,15 @@ func writeFlutterScaffold(app *ast.AppNode, outDir string) error {
 		return err
 	}
 
-	pkgSlug := strings.ToLower(codegen.SanitizeIdent(app.AppName))
+	pkgSlug := flutterProjectName(app.AppName)
+	needsHTTP, needsStorage := codegen.FlutterDeps(app)
+	var deps strings.Builder
+	if needsHTTP {
+		deps.WriteString("  http: ^1.2.0\n")
+	}
+	if needsStorage {
+		deps.WriteString("  shared_preferences: ^2.2.0\n")
+	}
 	pubspec := fmt.Sprintf(`name: %s
 description: Generated by gapk compiler.
 publish_to: 'none'
@@ -136,18 +244,19 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  http: ^1.2.0
-  shared_preferences: ^2.2.0
-
+%s
 flutter:
   uses-material-design: true
-`, pkgSlug)
+`, pkgSlug, deps.String())
 
 	if err := os.WriteFile(filepath.Join(outDir, "pubspec.yaml"), []byte(pubspec), 0644); err != nil {
 		return err
 	}
 
-	dartCode := codegen.GenerateFlutterDart(app)
+	dartCode, err := codegen.GenerateFlutterDart(app)
+	if err != nil {
+		return err
+	}
 	return os.WriteFile(filepath.Join(libDir, "main.dart"), []byte(dartCode), 0644)
 }
 
@@ -157,6 +266,9 @@ func writeAndroidComposeScaffold(app *ast.AppNode, outDir string) error {
 	if err := os.MkdirAll(javaDir, 0755); err != nil {
 		return err
 	}
-	kotlinCode := codegen.GenerateKotlinCompose(app)
+	kotlinCode, err := codegen.GenerateKotlinCompose(app)
+	if err != nil {
+		return err
+	}
 	return os.WriteFile(filepath.Join(javaDir, "MainActivity.kt"), []byte(kotlinCode), 0644)
 }
