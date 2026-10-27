@@ -2,20 +2,102 @@ package codegen
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/gapk-lang/gapk/internal/ast"
+	"github.com/gapk-lang/gapk/internal/strlit"
+	"github.com/gapk-lang/gapk/internal/validate"
 )
 
+// flutterGen carries the state table code generation needs to emit
+// type-correct code (e.g. slider assignment differs for int vs double).
+type flutterGen struct {
+	states map[string]string // state name -> kind
+}
+
+// FlutterDeps reports whether the generated Flutter project needs the
+// http / shared_preferences packages. Unused dependencies are left out
+// of the pubspec and imports entirely.
+func FlutterDeps(app *ast.AppNode) (needsHTTP, needsStorage bool) {
+	walkActions(app, func(act ast.ActionNode) {
+		switch act.Kind {
+		case "http_get", "http_post":
+			needsHTTP = true
+		case "storage_set", "storage_get":
+			needsStorage = true
+		}
+	})
+	return needsHTTP, needsStorage
+}
+
+func walkActions(app *ast.AppNode, fn func(ast.ActionNode)) {
+	var walkWidget func(w ast.WidgetNode)
+	walkWidget = func(w ast.WidgetNode) {
+		for _, act := range w.Actions {
+			fn(act)
+			walkActionTree(act, fn)
+		}
+		for _, ch := range w.Children {
+			walkWidget(ch)
+		}
+	}
+	for _, sc := range app.Screens {
+		if sc.AppBar != nil {
+			for _, ch := range sc.AppBar.Children {
+				walkWidget(ch)
+			}
+		}
+		if sc.Drawer != nil {
+			for _, ch := range sc.Drawer.Children {
+				walkWidget(ch)
+			}
+		}
+		if sc.FAB != nil {
+			for _, act := range sc.FAB.Actions {
+				fn(act)
+				walkActionTree(act, fn)
+			}
+		}
+		for _, w := range sc.Widgets {
+			walkWidget(w)
+		}
+	}
+}
+
+func walkActionTree(act ast.ActionNode, fn func(ast.ActionNode)) {
+	for _, sub := range act.ThenActions {
+		fn(sub)
+		walkActionTree(sub, fn)
+	}
+	for _, sub := range act.ElseActions {
+		fn(sub)
+		walkActionTree(sub, fn)
+	}
+}
+
 // GenerateFlutterDart transpiles the parsed AST into a complete Flutter lib/main.dart file.
-func GenerateFlutterDart(app *ast.AppNode) string {
+func GenerateFlutterDart(app *ast.AppNode) (string, error) {
+	if err := validate.ValidateApp(app); err != nil {
+		return "", err
+	}
+	g := &flutterGen{states: map[string]string{}}
+	for _, st := range app.States {
+		g.states[st.Name] = st.Kind
+	}
 	var out strings.Builder
 	appClass := SanitizeIdent(app.AppName) + "App"
 
 	out.WriteString("import 'package:flutter/material.dart';\n")
 	out.WriteString("import 'dart:convert';\n")
-	out.WriteString("import 'package:http/http.dart' as http;\n")
-	out.WriteString("import 'package:shared_preferences/shared_preferences.dart';\n\n")
+	needsHTTP, needsStorage := FlutterDeps(app)
+	if needsHTTP {
+		out.WriteString("import 'package:http/http.dart' as http;\n")
+	}
+	if needsStorage {
+		out.WriteString("import 'package:shared_preferences/shared_preferences.dart';\n")
+	}
+	out.WriteString("\n")
 
 	out.WriteString("void main() {\n")
 	out.WriteString(fmt.Sprintf("  runApp(const %s());\n", appClass))
@@ -33,7 +115,7 @@ func GenerateFlutterDart(app *ast.AppNode) string {
 	for _, st := range app.States {
 		switch st.Kind {
 		case "string":
-			out.WriteString(fmt.Sprintf("  String %s = %q;\n", st.Name, st.Value))
+			out.WriteString(fmt.Sprintf("  String %s = %s;\n", st.Name, strlit.Quoted(st.Value)))
 		case "int":
 			out.WriteString(fmt.Sprintf("  int %s = %s;\n", st.Name, st.Value))
 		case "float":
@@ -43,7 +125,7 @@ func GenerateFlutterDart(app *ast.AppNode) string {
 		case "list":
 			var quoted []string
 			for _, item := range st.ListItems {
-				quoted = append(quoted, fmt.Sprintf("%q", item))
+				quoted = append(quoted, strlit.Quoted(item))
 			}
 			out.WriteString(fmt.Sprintf("  List<String> %s = [%s];\n", st.Name, strings.Join(quoted, ", ")))
 		}
@@ -61,7 +143,7 @@ func GenerateFlutterDart(app *ast.AppNode) string {
 	out.WriteString("  Widget build(BuildContext context) {\n")
 	out.WriteString("    return MaterialApp(\n")
 	out.WriteString("      debugShowCheckedModeBanner: false,\n")
-	out.WriteString(fmt.Sprintf("      title: %q,\n", app.AppName))
+	out.WriteString(fmt.Sprintf("      title: %s,\n", strlit.Quoted(app.AppName)))
 	out.WriteString("      theme: ThemeData(\n")
 	out.WriteString("        useMaterial3: true,\n")
 	out.WriteString(fmt.Sprintf("        colorSchemeSeed: %s,\n", seedColor))
@@ -84,14 +166,14 @@ func GenerateFlutterDart(app *ast.AppNode) string {
 
 	// 2. Render each Screen method
 	for _, sc := range app.Screens {
-		renderFlutterScreen(&out, sc)
+		g.renderFlutterScreen(&out, sc)
 	}
 
 	out.WriteString("}\n")
-	return out.String()
+	return out.String(), nil
 }
 
-func renderFlutterScreen(out *strings.Builder, sc ast.ScreenNode) {
+func (g *flutterGen) renderFlutterScreen(out *strings.Builder, sc ast.ScreenNode) {
 	fnName := "_build" + SanitizeIdent(sc.Title) + "Screen"
 	out.WriteString(fmt.Sprintf("  Widget %s(BuildContext context) {\n", fnName))
 	out.WriteString("    return Scaffold(\n")
@@ -103,7 +185,7 @@ func renderFlutterScreen(out *strings.Builder, sc ast.ScreenNode) {
 	// AppBar
 	if sc.AppBar != nil {
 		out.WriteString("      appBar: AppBar(\n")
-		out.WriteString(fmt.Sprintf("        title: Text(%s),\n", formatDartString(sc.AppBar.TextExpr)))
+		out.WriteString(fmt.Sprintf("        title: Text(%s),\n", strlit.StringExpr(sc.AppBar.TextExpr)))
 		if sc.AppBar.Props["center"] == "true" {
 			out.WriteString("        centerTitle: true,\n")
 		}
@@ -113,14 +195,14 @@ func renderFlutterScreen(out *strings.Builder, sc ast.ScreenNode) {
 		if len(sc.AppBar.Children) > 0 {
 			out.WriteString("        actions: [\n")
 			for _, actW := range sc.AppBar.Children {
-				renderFlutterWidget(out, actW, "          ")
+				g.renderFlutterWidget(out, actW, "          ")
 				out.WriteString(",\n")
 			}
 			out.WriteString("        ],\n")
 		}
 		out.WriteString("      ),\n")
 	} else {
-		out.WriteString(fmt.Sprintf("      appBar: AppBar(title: const Text(%q)),\n", sc.Title))
+		out.WriteString(fmt.Sprintf("      appBar: AppBar(title: Text(%s)),\n", strlit.Quoted(sc.Title)))
 	}
 
 	// Drawer
@@ -130,7 +212,7 @@ func renderFlutterScreen(out *strings.Builder, sc ast.ScreenNode) {
 		out.WriteString("          padding: EdgeInsets.zero,\n")
 		out.WriteString("          children: [\n")
 		for _, ch := range sc.Drawer.Children {
-			renderFlutterWidget(out, ch, "            ")
+			g.renderFlutterWidget(out, ch, "            ")
 			out.WriteString(",\n")
 		}
 		out.WriteString("          ],\n")
@@ -145,17 +227,17 @@ func renderFlutterScreen(out *strings.Builder, sc ast.ScreenNode) {
 	if pad == "" {
 		pad = "16"
 	}
-	out.WriteString(fmt.Sprintf("          padding: const EdgeInsets.all(%s.0),\n", pad))
+	out.WriteString(fmt.Sprintf("          padding: const EdgeInsets.all(%s),\n", pad))
 	if len(sc.Widgets) == 1 {
 		out.WriteString("          child: ")
-		renderFlutterWidget(out, sc.Widgets[0], "          ")
+		g.renderFlutterWidget(out, sc.Widgets[0], "          ")
 		out.WriteString(",\n")
 	} else {
 		out.WriteString("          child: Column(\n")
 		out.WriteString("            crossAxisAlignment: CrossAxisAlignment.stretch,\n")
 		out.WriteString("            children: [\n")
 		for _, w := range sc.Widgets {
-			renderFlutterWidget(out, w, "              ")
+			g.renderFlutterWidget(out, w, "              ")
 			out.WriteString(",\n")
 		}
 		out.WriteString("            ],\n")
@@ -166,13 +248,13 @@ func renderFlutterScreen(out *strings.Builder, sc ast.ScreenNode) {
 
 	// FloatingActionButton
 	if sc.FAB != nil {
-		iconName := formatRawExpr(sc.FAB.TextExpr)
+		iconName := exprSingleValue(sc.FAB.TextExpr)
 		out.WriteString("      floatingActionButton: FloatingActionButton(\n")
 		if bg := sc.FAB.Props["bg"]; bg != "" {
 			out.WriteString(fmt.Sprintf("        backgroundColor: %s,\n", dartColor(bg, "null")))
 		}
-		out.WriteString("        onPressed: () {\n")
-		renderFlutterActions(out, sc.FAB.Actions, "          ")
+		out.WriteString("        onPressed: () async {\n")
+		g.renderFlutterActions(out, sc.FAB.Actions, "          ")
 		out.WriteString("        },\n")
 		out.WriteString(fmt.Sprintf("        child: const Icon(Icons.%s),\n", iconName))
 		out.WriteString("      ),\n")
@@ -180,7 +262,15 @@ func renderFlutterScreen(out *strings.Builder, sc ast.ScreenNode) {
 
 	// BottomNavigationBar
 	if sc.BotNav != nil && len(sc.BotNav.Children) > 0 {
+		currentIndex := 0
+		for idx, item := range sc.BotNav.Children {
+			if item.BindState == sc.Title {
+				currentIndex = idx
+			}
+		}
 		out.WriteString("      bottomNavigationBar: BottomNavigationBar(\n")
+		out.WriteString(fmt.Sprintf("        type: BottomNavigationBarType.fixed,\n"))
+		out.WriteString(fmt.Sprintf("        currentIndex: %d,\n", currentIndex))
 		out.WriteString("        onTap: (index) {\n")
 		for idx, item := range sc.BotNav.Children {
 			if item.BindState != "" {
@@ -190,10 +280,10 @@ func renderFlutterScreen(out *strings.Builder, sc ast.ScreenNode) {
 		out.WriteString("        },\n")
 		out.WriteString("        items: const [\n")
 		for _, item := range sc.BotNav.Children {
-			lbl := formatRawExpr(item.TextExpr)
+			lbl := exprSingleValue(item.TextExpr)
 			out.WriteString("          BottomNavigationBarItem(\n")
 			out.WriteString(fmt.Sprintf("            icon: Icon(Icons.%s),\n", item.Placeholder))
-			out.WriteString(fmt.Sprintf("            label: %q,\n", lbl))
+			out.WriteString(fmt.Sprintf("            label: %s,\n", strlit.Quoted(lbl)))
 			out.WriteString("          ),\n")
 		}
 		out.WriteString("        ],\n")
@@ -204,7 +294,7 @@ func renderFlutterScreen(out *strings.Builder, sc ast.ScreenNode) {
 	out.WriteString("  }\n\n")
 }
 
-func renderFlutterWidget(out *strings.Builder, w ast.WidgetNode, indent string) {
+func (g *flutterGen) renderFlutterWidget(out *strings.Builder, w ast.WidgetNode, indent string) {
 	switch w.Kind {
 	case "column":
 		out.WriteString("Column(\n")
@@ -214,10 +304,10 @@ func renderFlutterWidget(out *strings.Builder, w ast.WidgetNode, indent string) 
 		spacing := w.Props["spacing"]
 		for i, ch := range w.Children {
 			out.WriteString(indent + "    ")
-			renderFlutterWidget(out, ch, indent+"    ")
+			g.renderFlutterWidget(out, ch, indent+"    ")
 			out.WriteString(",\n")
 			if spacing != "" && i < len(w.Children)-1 {
-				out.WriteString(fmt.Sprintf("%s    const SizedBox(height: %s.0),\n", indent, spacing))
+				out.WriteString(fmt.Sprintf("%s    const SizedBox(height: %s),\n", indent, spacing))
 			}
 		}
 		out.WriteString(fmt.Sprintf("%s  ],\n%s)", indent, indent))
@@ -229,10 +319,10 @@ func renderFlutterWidget(out *strings.Builder, w ast.WidgetNode, indent string) 
 		spacing := w.Props["spacing"]
 		for i, ch := range w.Children {
 			out.WriteString(indent + "    ")
-			renderFlutterWidget(out, ch, indent+"    ")
+			g.renderFlutterWidget(out, ch, indent+"    ")
 			out.WriteString(",\n")
 			if spacing != "" && i < len(w.Children)-1 {
-				out.WriteString(fmt.Sprintf("%s    const SizedBox(width: %s.0),\n", indent, spacing))
+				out.WriteString(fmt.Sprintf("%s    const SizedBox(width: %s),\n", indent, spacing))
 			}
 		}
 		out.WriteString(fmt.Sprintf("%s  ],\n%s)", indent, indent))
@@ -242,7 +332,7 @@ func renderFlutterWidget(out *strings.Builder, w ast.WidgetNode, indent string) 
 		out.WriteString(fmt.Sprintf("%s  children: [\n", indent))
 		for _, ch := range w.Children {
 			out.WriteString(indent + "    ")
-			renderFlutterWidget(out, ch, indent+"    ")
+			g.renderFlutterWidget(out, ch, indent+"    ")
 			out.WriteString(",\n")
 		}
 		out.WriteString(fmt.Sprintf("%s  ],\n%s)", indent, indent))
@@ -250,16 +340,16 @@ func renderFlutterWidget(out *strings.Builder, w ast.WidgetNode, indent string) 
 	case "container":
 		out.WriteString("Container(\n")
 		if width := w.Props["width"]; width != "" {
-			out.WriteString(fmt.Sprintf("%s  width: %s.0,\n", indent, width))
+			out.WriteString(fmt.Sprintf("%s  width: %s,\n", indent, width))
 		}
 		if height := w.Props["height"]; height != "" {
-			out.WriteString(fmt.Sprintf("%s  height: %s.0,\n", indent, height))
+			out.WriteString(fmt.Sprintf("%s  height: %s,\n", indent, height))
 		}
 		if pad := w.Props["padding"]; pad != "" {
-			out.WriteString(fmt.Sprintf("%s  padding: const EdgeInsets.all(%s.0),\n", indent, pad))
+			out.WriteString(fmt.Sprintf("%s  padding: const EdgeInsets.all(%s),\n", indent, pad))
 		}
 		if mar := w.Props["margin"]; mar != "" {
-			out.WriteString(fmt.Sprintf("%s  margin: const EdgeInsets.all(%s.0),\n", indent, mar))
+			out.WriteString(fmt.Sprintf("%s  margin: const EdgeInsets.all(%s),\n", indent, mar))
 		}
 		bg := w.Props["bg"]
 		rad := w.Props["radius"]
@@ -270,7 +360,7 @@ func renderFlutterWidget(out *strings.Builder, w ast.WidgetNode, indent string) 
 				out.WriteString(fmt.Sprintf("%s    color: %s,\n", indent, dartColor(bg, "Colors.transparent")))
 			}
 			if rad != "" {
-				out.WriteString(fmt.Sprintf("%s    borderRadius: BorderRadius.circular(%s.0),\n", indent, rad))
+				out.WriteString(fmt.Sprintf("%s    borderRadius: BorderRadius.circular(%s),\n", indent, rad))
 			}
 			if borderCol != "" {
 				out.WriteString(fmt.Sprintf("%s    border: Border.all(color: %s),\n", indent, dartColor(borderCol, "Colors.grey")))
@@ -279,13 +369,13 @@ func renderFlutterWidget(out *strings.Builder, w ast.WidgetNode, indent string) 
 		}
 		if len(w.Children) == 1 {
 			out.WriteString(fmt.Sprintf("%s  child: ", indent))
-			renderFlutterWidget(out, w.Children[0], indent+"  ")
+			g.renderFlutterWidget(out, w.Children[0], indent+"  ")
 			out.WriteString(",\n")
 		} else if len(w.Children) > 1 {
 			out.WriteString(fmt.Sprintf("%s  child: Column(\n%s    crossAxisAlignment: CrossAxisAlignment.start,\n%s    children: [\n", indent, indent, indent))
 			for _, ch := range w.Children {
 				out.WriteString(indent + "      ")
-				renderFlutterWidget(out, ch, indent+"      ")
+				g.renderFlutterWidget(out, ch, indent+"      ")
 				out.WriteString(",\n")
 			}
 			out.WriteString(fmt.Sprintf("%s    ],\n%s  ),\n", indent, indent))
@@ -302,18 +392,18 @@ func renderFlutterWidget(out *strings.Builder, w ast.WidgetNode, indent string) 
 			pad = "16"
 		}
 		out.WriteString("Card(\n")
-		out.WriteString(fmt.Sprintf("%s  elevation: %s.0,\n", indent, elev))
+		out.WriteString(fmt.Sprintf("%s  elevation: %s,\n", indent, elev))
 		if bg := w.Props["bg"]; bg != "" {
 			out.WriteString(fmt.Sprintf("%s  color: %s,\n", indent, dartColor(bg, "null")))
 		}
 		if rad := w.Props["radius"]; rad != "" {
-			out.WriteString(fmt.Sprintf("%s  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(%s.0)),\n", indent, rad))
+			out.WriteString(fmt.Sprintf("%s  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(%s)),\n", indent, rad))
 		}
-		out.WriteString(fmt.Sprintf("%s  child: Padding(\n%s    padding: const EdgeInsets.all(%s.0),\n", indent, indent, pad))
+		out.WriteString(fmt.Sprintf("%s  child: Padding(\n%s    padding: const EdgeInsets.all(%s),\n", indent, indent, pad))
 		out.WriteString(fmt.Sprintf("%s    child: Column(\n%s      crossAxisAlignment: CrossAxisAlignment.start,\n%s      children: [\n", indent, indent, indent))
 		for _, ch := range w.Children {
 			out.WriteString(indent + "        ")
-			renderFlutterWidget(out, ch, indent+"        ")
+			g.renderFlutterWidget(out, ch, indent+"        ")
 			out.WriteString(",\n")
 		}
 		out.WriteString(fmt.Sprintf("%s      ],\n%s    ),\n%s  ),\n%s)", indent, indent, indent, indent))
@@ -324,7 +414,7 @@ func renderFlutterWidget(out *strings.Builder, w ast.WidgetNode, indent string) 
 		out.WriteString(fmt.Sprintf("%s  children: [\n", indent))
 		for _, ch := range w.Children {
 			out.WriteString(indent + "    ")
-			renderFlutterWidget(out, ch, indent+"    ")
+			g.renderFlutterWidget(out, ch, indent+"    ")
 			out.WriteString(",\n")
 		}
 		out.WriteString(fmt.Sprintf("%s  ],\n%s)", indent, indent))
@@ -337,13 +427,13 @@ func renderFlutterWidget(out *strings.Builder, w ast.WidgetNode, indent string) 
 		out.WriteString(fmt.Sprintf("%s    final %s = %s[index];\n", indent, w.IteratorVar, w.BindState))
 		if len(w.Children) == 1 {
 			out.WriteString(fmt.Sprintf("%s    return ", indent))
-			renderFlutterWidget(out, w.Children[0], indent+"    ")
+			g.renderFlutterWidget(out, w.Children[0], indent+"    ")
 			out.WriteString(";\n")
 		} else {
 			out.WriteString(fmt.Sprintf("%s    return Column(children: [\n", indent))
 			for _, ch := range w.Children {
 				out.WriteString(indent + "      ")
-				renderFlutterWidget(out, ch, indent+"      ")
+				g.renderFlutterWidget(out, ch, indent+"      ")
 				out.WriteString(",\n")
 			}
 			out.WriteString(fmt.Sprintf("%s    ]);\n", indent))
@@ -352,6 +442,9 @@ func renderFlutterWidget(out *strings.Builder, w ast.WidgetNode, indent string) 
 
 	case "gridview":
 		cols := w.Props["cols"]
+		if cols == "" {
+			cols = w.Props["cross"] // alias: gridview [cross: 2]
+		}
 		if cols == "" {
 			cols = "2"
 		}
@@ -362,12 +455,12 @@ func renderFlutterWidget(out *strings.Builder, w ast.WidgetNode, indent string) 
 		out.WriteString("GridView.count(\n")
 		out.WriteString(fmt.Sprintf("%s  shrinkWrap: true,\n", indent))
 		out.WriteString(fmt.Sprintf("%s  crossAxisCount: %s,\n", indent, cols))
-		out.WriteString(fmt.Sprintf("%s  crossAxisSpacing: %s.0,\n", indent, spacing))
-		out.WriteString(fmt.Sprintf("%s  mainAxisSpacing: %s.0,\n", indent, spacing))
+		out.WriteString(fmt.Sprintf("%s  crossAxisSpacing: %s,\n", indent, spacing))
+		out.WriteString(fmt.Sprintf("%s  mainAxisSpacing: %s,\n", indent, spacing))
 		out.WriteString(fmt.Sprintf("%s  children: [\n", indent))
 		for _, ch := range w.Children {
 			out.WriteString(indent + "    ")
-			renderFlutterWidget(out, ch, indent+"    ")
+			g.renderFlutterWidget(out, ch, indent+"    ")
 			out.WriteString(",\n")
 		}
 		out.WriteString(fmt.Sprintf("%s  ],\n%s)", indent, indent))
@@ -376,7 +469,7 @@ func renderFlutterWidget(out *strings.Builder, w ast.WidgetNode, indent string) 
 		out.WriteString("SingleChildScrollView(\n")
 		if len(w.Children) > 0 {
 			out.WriteString(fmt.Sprintf("%s  child: ", indent))
-			renderFlutterWidget(out, w.Children[0], indent+"  ")
+			g.renderSingleChild(out, w.Children, indent+"  ")
 			out.WriteString(",\n")
 		}
 		out.WriteString(indent + ")")
@@ -385,7 +478,7 @@ func renderFlutterWidget(out *strings.Builder, w ast.WidgetNode, indent string) 
 		out.WriteString("Center(\n")
 		if len(w.Children) > 0 {
 			out.WriteString(fmt.Sprintf("%s  child: ", indent))
-			renderFlutterWidget(out, w.Children[0], indent+"  ")
+			g.renderSingleChild(out, w.Children, indent+"  ")
 			out.WriteString(",\n")
 		}
 		out.WriteString(indent + ")")
@@ -399,7 +492,7 @@ func renderFlutterWidget(out *strings.Builder, w ast.WidgetNode, indent string) 
 		out.WriteString(fmt.Sprintf("%s  flex: %s,\n", indent, flex))
 		if len(w.Children) > 0 {
 			out.WriteString(fmt.Sprintf("%s  child: ", indent))
-			renderFlutterWidget(out, w.Children[0], indent+"  ")
+			g.renderSingleChild(out, w.Children, indent+"  ")
 			out.WriteString(",\n")
 		}
 		out.WriteString(indent + ")")
@@ -409,10 +502,10 @@ func renderFlutterWidget(out *strings.Builder, w ast.WidgetNode, indent string) 
 		if pad == "" {
 			pad = "12"
 		}
-		out.WriteString(fmt.Sprintf("Padding(\n%s  padding: const EdgeInsets.all(%s.0),\n", indent, pad))
+		out.WriteString(fmt.Sprintf("Padding(\n%s  padding: const EdgeInsets.all(%s),\n", indent, pad))
 		if len(w.Children) > 0 {
 			out.WriteString(fmt.Sprintf("%s  child: ", indent))
-			renderFlutterWidget(out, w.Children[0], indent+"  ")
+			g.renderSingleChild(out, w.Children, indent+"  ")
 			out.WriteString(",\n")
 		}
 		out.WriteString(indent + ")")
@@ -426,7 +519,7 @@ func renderFlutterWidget(out *strings.Builder, w ast.WidgetNode, indent string) 
 		if hVal == "" {
 			hVal = "12"
 		}
-		out.WriteString(fmt.Sprintf("const SizedBox(width: %s.0, height: %s.0)", wVal, hVal))
+		out.WriteString(fmt.Sprintf("const SizedBox(width: %s, height: %s)", wVal, hVal))
 
 	case "spacer":
 		flex := w.Props["flex"]
@@ -443,9 +536,9 @@ func renderFlutterWidget(out *strings.Builder, w ast.WidgetNode, indent string) 
 		weight := w.Props["weight"]
 		col := w.Props["color"]
 		if size != "" || weight != "" || col != "" {
-			out.WriteString(fmt.Sprintf("Text(\n%s  %s,\n%s  style: TextStyle(\n", indent, formatDartString(w.TextExpr), indent))
+			out.WriteString(fmt.Sprintf("Text(\n%s  %s,\n%s  style: TextStyle(\n", indent, strlit.StringExpr(w.TextExpr), indent))
 			if size != "" {
-				out.WriteString(fmt.Sprintf("%s    fontSize: %s.0,\n", indent, size))
+				out.WriteString(fmt.Sprintf("%s    fontSize: %s,\n", indent, size))
 			}
 			if weight == "bold" {
 				out.WriteString(fmt.Sprintf("%s    fontWeight: FontWeight.bold,\n", indent))
@@ -457,62 +550,69 @@ func renderFlutterWidget(out *strings.Builder, w ast.WidgetNode, indent string) 
 			}
 			out.WriteString(fmt.Sprintf("%s  ),\n%s)", indent, indent))
 		} else {
-			out.WriteString(fmt.Sprintf("Text(%s)", formatDartString(w.TextExpr)))
+			out.WriteString(fmt.Sprintf("Text(%s)", strlit.StringExpr(w.TextExpr)))
 		}
 
 	case "icon":
-		iconName := formatRawExpr(w.TextExpr)
+		iconName := exprSingleValue(w.TextExpr)
 		size := w.Props["size"]
 		if size == "" {
 			size = "24"
 		}
 		col := dartColor(w.Props["color"], "null")
 		if col != "null" {
-			out.WriteString(fmt.Sprintf("Icon(Icons.%s, size: %s.0, color: %s)", iconName, size, col))
+			out.WriteString(fmt.Sprintf("Icon(Icons.%s, size: %s, color: %s)", iconName, size, col))
 		} else {
-			out.WriteString(fmt.Sprintf("Icon(Icons.%s, size: %s.0)", iconName, size))
+			out.WriteString(fmt.Sprintf("Icon(Icons.%s, size: %s)", iconName, size))
 		}
 
 	case "image":
-		url := formatRawExpr(w.TextExpr)
+		url := strlit.StringExpr(w.TextExpr)
 		rad := w.Props["radius"]
 		if rad == "" {
 			rad = "8"
 		}
-		out.WriteString(fmt.Sprintf("ClipRRect(\n%s  borderRadius: BorderRadius.circular(%s.0),\n%s  child: Image.network(%q, fit: BoxFit.cover),\n%s)", indent, rad, indent, url, indent))
+		sizeArgs := ""
+		if width := w.Props["width"]; width != "" {
+			sizeArgs += fmt.Sprintf(", width: %s", width)
+		}
+		if height := w.Props["height"]; height != "" {
+			sizeArgs += fmt.Sprintf(", height: %s", height)
+		}
+		out.WriteString(fmt.Sprintf("ClipRRect(\n%s  borderRadius: BorderRadius.circular(%s),\n%s  child: Image.network(%s, fit: BoxFit.cover%s, errorBuilder: (context, error, stackTrace) => const Icon(Icons.broken_image)),\n%s)", indent, rad, indent, url, sizeArgs, indent))
 
 	case "avatar":
-		lbl := formatDartString(w.TextExpr)
+		lbl := strlit.StringExpr(w.TextExpr)
 		rad := w.Props["radius"]
 		if rad == "" {
 			rad = "20"
 		}
-		out.WriteString(fmt.Sprintf("CircleAvatar(radius: %s.0, child: Text(%s))", rad, lbl))
+		out.WriteString(fmt.Sprintf("CircleAvatar(radius: %s, child: Text(%s))", rad, lbl))
 
 	case "badge":
-		out.WriteString(fmt.Sprintf("Chip(label: Text(%s))", formatDartString(w.TextExpr)))
+		out.WriteString(fmt.Sprintf("Chip(label: Text(%s))", strlit.StringExpr(w.TextExpr)))
 
 	case "listtile":
 		out.WriteString("ListTile(\n")
 		if ic := w.Props["icon"]; ic != "" {
 			out.WriteString(fmt.Sprintf("%s  leading: const Icon(Icons.%s),\n", indent, ic))
 		}
-		out.WriteString(fmt.Sprintf("%s  title: Text(%s),\n", indent, formatDartString(w.TextExpr)))
+		out.WriteString(fmt.Sprintf("%s  title: Text(%s),\n", indent, strlit.StringExpr(w.TextExpr)))
 		if len(w.SubExpr) > 0 {
-			out.WriteString(fmt.Sprintf("%s  subtitle: Text(%s),\n", indent, formatDartString(w.SubExpr)))
+			out.WriteString(fmt.Sprintf("%s  subtitle: Text(%s),\n", indent, strlit.StringExpr(w.SubExpr)))
 		}
 		if tr := w.Props["trailing"]; tr != "" {
 			out.WriteString(fmt.Sprintf("%s  trailing: const Icon(Icons.%s),\n", indent, tr))
 		}
 		if len(w.Actions) > 0 {
-			out.WriteString(fmt.Sprintf("%s  onTap: () {\n", indent))
-			renderFlutterActions(out, w.Actions, indent+"    ")
+			out.WriteString(fmt.Sprintf("%s  onTap: () async {\n", indent))
+			g.renderFlutterActions(out, w.Actions, indent+"    ")
 			out.WriteString(fmt.Sprintf("%s  },\n", indent))
 		}
 		out.WriteString(indent + ")")
 
 	case "progress":
-		val := formatRawExpr(w.TextExpr)
+		val := strlit.CodeExpr(w.TextExpr)
 		if w.Props["kind"] == "circular" {
 			out.WriteString("const CircularProgressIndicator()")
 		} else {
@@ -525,9 +625,9 @@ func renderFlutterWidget(out *strings.Builder, w ast.WidgetNode, indent string) 
 			out.WriteString(fmt.Sprintf("%s  obscureText: true,\n", indent))
 		}
 		out.WriteString(fmt.Sprintf("%s  decoration: InputDecoration(\n", indent))
-		out.WriteString(fmt.Sprintf("%s    labelText: %q,\n", indent, w.Placeholder))
+		out.WriteString(fmt.Sprintf("%s    labelText: %s,\n", indent, strlit.Quoted(w.Placeholder)))
 		if hint := w.Props["hint"]; hint != "" {
-			out.WriteString(fmt.Sprintf("%s    hintText: %q,\n", indent, hint))
+			out.WriteString(fmt.Sprintf("%s    hintText: %s,\n", indent, strlit.Quoted(hint)))
 		}
 		if ic := w.Props["icon"]; ic != "" {
 			out.WriteString(fmt.Sprintf("%s    prefixIcon: const Icon(Icons.%s),\n", indent, ic))
@@ -539,14 +639,14 @@ func renderFlutterWidget(out *strings.Builder, w ast.WidgetNode, indent string) 
 
 	case "switch_toggle":
 		out.WriteString("SwitchListTile(\n")
-		out.WriteString(fmt.Sprintf("%s  title: const Text(%q),\n", indent, w.Placeholder))
+		out.WriteString(fmt.Sprintf("%s  title: Text(%s),\n", indent, strlit.Quoted(w.Placeholder)))
 		out.WriteString(fmt.Sprintf("%s  value: %s,\n", indent, w.BindState))
 		out.WriteString(fmt.Sprintf("%s  onChanged: (val) => setState(() => %s = val),\n", indent, w.BindState))
 		out.WriteString(indent + ")")
 
 	case "checkbox":
 		out.WriteString("CheckboxListTile(\n")
-		out.WriteString(fmt.Sprintf("%s  title: const Text(%q),\n", indent, w.Placeholder))
+		out.WriteString(fmt.Sprintf("%s  title: Text(%s),\n", indent, strlit.Quoted(w.Placeholder)))
 		out.WriteString(fmt.Sprintf("%s  value: %s,\n", indent, w.BindState))
 		out.WriteString(fmt.Sprintf("%s  onChanged: (val) => setState(() => %s = val ?? false),\n", indent, w.BindState))
 		out.WriteString(indent + ")")
@@ -562,9 +662,13 @@ func renderFlutterWidget(out *strings.Builder, w ast.WidgetNode, indent string) 
 		}
 		out.WriteString("Slider(\n")
 		out.WriteString(fmt.Sprintf("%s  value: %s.toDouble(),\n", indent, w.BindState))
-		out.WriteString(fmt.Sprintf("%s  min: %s.0,\n", indent, min))
-		out.WriteString(fmt.Sprintf("%s  max: %s.0,\n", indent, max))
-		out.WriteString(fmt.Sprintf("%s  onChanged: (val) => setState(() => %s = val.round()),\n", indent, w.BindState))
+		out.WriteString(fmt.Sprintf("%s  min: %s,\n", indent, min))
+		out.WriteString(fmt.Sprintf("%s  max: %s,\n", indent, max))
+		if g.states[w.BindState] == "float" {
+			out.WriteString(fmt.Sprintf("%s  onChanged: (val) => setState(() => %s = val),\n", indent, w.BindState))
+		} else {
+			out.WriteString(fmt.Sprintf("%s  onChanged: (val) => setState(() => %s = val.round()),\n", indent, w.BindState))
+		}
 		out.WriteString(indent + ")")
 
 	case "dropdown":
@@ -572,7 +676,7 @@ func renderFlutterWidget(out *strings.Builder, w ast.WidgetNode, indent string) 
 		out.WriteString(fmt.Sprintf("%s  value: %s,\n", indent, w.BindState))
 		out.WriteString(fmt.Sprintf("%s  items: [\n", indent))
 		for _, opt := range w.Options {
-			out.WriteString(fmt.Sprintf("%s    const DropdownMenuItem(value: %q, child: Text(%q)),\n", indent, opt, opt))
+			out.WriteString(fmt.Sprintf("%s    DropdownMenuItem(value: %s, child: Text(%s)),\n", indent, strlit.Quoted(opt), strlit.Quoted(opt)))
 		}
 		out.WriteString(fmt.Sprintf("%s  ],\n", indent))
 		out.WriteString(fmt.Sprintf("%s  onChanged: (val) => setState(() { if (val != null) %s = val; }),\n", indent, w.BindState))
@@ -590,35 +694,35 @@ func renderFlutterWidget(out *strings.Builder, w ast.WidgetNode, indent string) 
 			out.WriteString(fmt.Sprintf("%s  style: %s.styleFrom(backgroundColor: %s),\n", indent, btnWidget, dartColor(bg, "null")))
 		}
 		out.WriteString(fmt.Sprintf("%s  onPressed: () async {\n", indent))
-		renderFlutterActions(out, w.Actions, indent+"    ")
+		g.renderFlutterActions(out, w.Actions, indent+"    ")
 		out.WriteString(fmt.Sprintf("%s  },\n", indent))
-		out.WriteString(fmt.Sprintf("%s  child: Text(%s),\n", indent, formatDartString(w.TextExpr)))
+		out.WriteString(fmt.Sprintf("%s  child: Text(%s),\n", indent, strlit.StringExpr(w.TextExpr)))
 		out.WriteString(indent + ")")
 
 	case "icon_button":
-		ic := formatRawExpr(w.TextExpr)
+		ic := exprSingleValue(w.TextExpr)
 		out.WriteString("IconButton(\n")
 		out.WriteString(fmt.Sprintf("%s  icon: const Icon(Icons.%s),\n", indent, ic))
-		out.WriteString(fmt.Sprintf("%s  onPressed: () {\n", indent))
-		renderFlutterActions(out, w.Actions, indent+"    ")
+		out.WriteString(fmt.Sprintf("%s  onPressed: () async {\n", indent))
+		g.renderFlutterActions(out, w.Actions, indent+"    ")
 		out.WriteString(fmt.Sprintf("%s  },\n%s)", indent, indent))
 	}
 }
 
-func renderFlutterActions(out *strings.Builder, actions []ast.ActionNode, indent string) {
+func (g *flutterGen) renderFlutterActions(out *strings.Builder, actions []ast.ActionNode, indent string) {
 	for _, act := range actions {
 		switch act.Kind {
 		case "assign":
 			out.WriteString(fmt.Sprintf("%ssetState(() { %s = %s; });\n", indent, act.TargetVar, act.ExprValue))
 		case "list_add":
-			out.WriteString(fmt.Sprintf("%ssetState(() { %s.add(%s.toString()); });\n", indent, act.TargetVar, act.ExprValue))
+			out.WriteString(fmt.Sprintf("%ssetState(() { %s.add((%s).toString()); });\n", indent, act.TargetVar, act.ExprValue))
 		case "list_remove":
-			out.WriteString(fmt.Sprintf("%ssetState(() { if (%s.isNotEmpty) %s.removeAt(%s); });\n", indent, act.TargetVar, act.TargetVar, act.ExprValue))
+			out.WriteString(fmt.Sprintf("%ssetState(() { final _i = %s; if (_i >= 0 && _i < %s.length) %s.removeAt(_i); });\n", indent, act.ExprValue, act.TargetVar, act.TargetVar))
 		case "toast", "snackbar":
-			out.WriteString(fmt.Sprintf("%sScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(%s)));\n", indent, formatDartString(act.MsgExpr)))
+			out.WriteString(fmt.Sprintf("%sScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(%s)));\n", indent, strlit.StringExpr(act.MsgExpr)))
 		case "dialog":
 			out.WriteString(fmt.Sprintf("%sshowDialog(\n%s  context: context,\n%s  builder: (ctx) => AlertDialog(\n%s    title: Text(%s),\n%s    content: Text(%s),\n%s    actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text(\"OK\"))],\n%s  ),\n%s);\n",
-				indent, indent, indent, indent, formatDartString(act.TitleExpr), indent, formatDartString(act.MsgExpr), indent, indent, indent))
+				indent, indent, indent, indent, strlit.StringExpr(act.TitleExpr), indent, strlit.StringExpr(act.MsgExpr), indent, indent, indent))
 		case "navigate":
 			out.WriteString(fmt.Sprintf("%sNavigator.pushNamed(context, '/%s');\n", indent, SanitizeIdent(act.ExprValue)))
 		case "navigate_back":
@@ -629,15 +733,15 @@ func renderFlutterActions(out *strings.Builder, actions []ast.ActionNode, indent
 			if headersCode != "" {
 				headersCode = "," + headersCode
 			}
-			out.WriteString(fmt.Sprintf("%stry {\n%s  final _res = await http.get(Uri.parse(%q)%s);\n%s  if (_res.statusCode == 200) setState(() => %s = _res.body); else setState(() => %s = \"\");\n%s} catch (_) { setState(() => %s = \"\"); }\n",
-				indent, indent, act.ExprValue, headersCode, indent, act.TargetVar, act.TargetVar, indent, act.TargetVar))
+			out.WriteString(fmt.Sprintf("%stry {\n%s  final _res = await http.get(Uri.parse(%s)%s);\n%s  if (_res.statusCode == 200) setState(() => %s = _res.body); else setState(() => %s = \"\");\n%s} catch (_) { setState(() => %s = \"\"); }\n",
+				indent, indent, strlit.Quoted(act.ExprValue), headersCode, indent, act.TargetVar, act.TargetVar, indent, act.TargetVar))
 		case "http_post":
 			headersCode := buildHeadersCode(act.Props)
 			if headersCode != "" {
 				headersCode = "," + headersCode
 			}
-			out.WriteString(fmt.Sprintf("%stry {\n%s  final _res = await http.post(Uri.parse(%q)%s, body: %s);\n%s  setState(() => %s = _res.body);\n%s} catch (_) { setState(() => %s = \"\"); }\n",
-				indent, indent, act.ExprValue, headersCode, act.BodyExpr, indent, act.TargetVar, indent, act.TargetVar))
+			out.WriteString(fmt.Sprintf("%stry {\n%s  final _res = await http.post(Uri.parse(%s)%s, body: %s);\n%s  if (_res.statusCode >= 200 && _res.statusCode < 300) setState(() => %s = _res.body); else setState(() => %s = \"\");\n%s} catch (_) { setState(() => %s = \"\"); }\n",
+				indent, indent, strlit.Quoted(act.ExprValue), headersCode, act.BodyExpr, indent, act.TargetVar, act.TargetVar, indent, act.TargetVar))
 		case "json_get":
 			// Extract JSON field: json_get response "data.token" into token
 			// Safe: wrapped in try-catch, invalid/empty JSON -> empty string (no crash)
@@ -645,40 +749,55 @@ func renderFlutterActions(out *strings.Builder, actions []ast.ActionNode, indent
 			var accessor strings.Builder
 			accessor.WriteString(fmt.Sprintf("jsonDecode(%s)", act.ExprValue))
 			for _, part := range pathParts {
-				accessor.WriteString(fmt.Sprintf("[%q]", part))
+				accessor.WriteString("[" + strlit.Quoted(part) + "]")
 			}
 			out.WriteString(fmt.Sprintf("%ssetState(() { try { %s = (%s)?.toString() ?? \"\"; } catch (_) { %s = \"\"; } });\n",
 				indent, act.TargetVar, accessor.String(), act.TargetVar))
 		case "storage_set":
-			out.WriteString(fmt.Sprintf("%sSharedPreferences.getInstance().then((prefs) => prefs.setString(%q, %s.toString()));\n",
-				indent, act.ExprValue, act.BodyExpr))
+			out.WriteString(fmt.Sprintf("%s{ final prefs = await SharedPreferences.getInstance(); await prefs.setString(%s, (%s).toString()); }\n",
+				indent, strlit.Quoted(act.ExprValue), act.BodyExpr))
 		case "storage_get":
-			out.WriteString(fmt.Sprintf("%sSharedPreferences.getInstance().then((prefs) => setState(() => %s = prefs.getString(%q) ?? \"\"));\n",
-				indent, act.TargetVar, act.ExprValue))
+			out.WriteString(fmt.Sprintf("%s{ final prefs = await SharedPreferences.getInstance(); setState(() => %s = prefs.getString(%s) ?? \"\"); }\n",
+				indent, act.TargetVar, strlit.Quoted(act.ExprValue)))
 		case "if":
 			out.WriteString(fmt.Sprintf("%sif (%s) {\n", indent, act.CondExpr))
-			renderFlutterActions(out, act.ThenActions, indent+"  ")
+			g.renderFlutterActions(out, act.ThenActions, indent+"  ")
 			if len(act.ElseActions) > 0 {
 				out.WriteString(fmt.Sprintf("%s} else {\n", indent))
-				renderFlutterActions(out, act.ElseActions, indent+"  ")
+				g.renderFlutterActions(out, act.ElseActions, indent+"  ")
 			}
 			out.WriteString(fmt.Sprintf("%s}\n", indent))
 		}
 	}
 }
 
-func formatDartString(parts []ast.ExprPart) string {
-	var sb strings.Builder
-	sb.WriteString("\"")
-	for _, p := range parts {
-		if p.IsLiteral {
-			sb.WriteString(p.Value)
-		} else {
-			sb.WriteString("${" + p.Value + "}")
-		}
+// exprSingleValue returns the single value of an expression that must
+// hold exactly one name or literal (icon names, nav labels). Validation
+// guarantees the shape; anything else falls back to the code expression.
+func exprSingleValue(parts []ast.ExprPart) string {
+	if len(parts) == 1 {
+		return parts[0].Value
 	}
-	sb.WriteString("\"")
-	return sb.String()
+	return strlit.CodeExpr(parts)
+}
+
+// renderSingleChild renders one child directly, or several children
+// wrapped in a Column. Single-child containers used to silently drop
+// every child after the first.
+func (g *flutterGen) renderSingleChild(out *strings.Builder, children []ast.WidgetNode, indent string) {
+	if len(children) == 1 {
+		g.renderFlutterWidget(out, children[0], indent)
+		return
+	}
+	out.WriteString("Column(\n")
+	out.WriteString(fmt.Sprintf("%s  crossAxisAlignment: CrossAxisAlignment.start,\n", indent))
+	out.WriteString(fmt.Sprintf("%s  children: [\n", indent))
+	for _, ch := range children {
+		out.WriteString(indent + "    ")
+		g.renderFlutterWidget(out, ch, indent+"    ")
+		out.WriteString(",\n")
+	}
+	out.WriteString(fmt.Sprintf("%s  ],\n%s)", indent, indent))
 }
 
 // buildHeadersCode generates Dart headers map from action modifiers.
@@ -687,40 +806,36 @@ func formatDartString(parts []ast.ExprPart) string {
 // Always includes Content-Type: application/json.
 // Returns empty string if no headers, otherwise " headers: {...}" (no trailing comma).
 func buildHeadersCode(mods ast.Modifiers) string {
+	// Sorted keys keep generated output identical across runs: Go map
+	// iteration order is random.
+	keys := make([]string, 0, len(mods))
+	for k := range mods {
+		if strings.HasPrefix(k, "header_") {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
 	var headers []string
 	hasContentType := false
-	for k, v := range mods {
-		if strings.HasPrefix(k, "header_") {
-			headerName := strings.TrimPrefix(k, "header_")
-			var dartVal string
-			if strings.HasPrefix(v, "EXPR:") {
-				// It's a Dart expression, use as-is
-				dartVal = strings.TrimPrefix(v, "EXPR:")
-			} else {
-				// Simple string, quote it
-				dartVal = fmt.Sprintf("%q", v)
-			}
-			headers = append(headers, fmt.Sprintf("%q: %s", headerName, dartVal))
-			if strings.ToLower(headerName) == "content-type" {
-				hasContentType = true
-			}
+	for _, k := range keys {
+		v := mods[k]
+		headerName := strings.TrimPrefix(k, "header_")
+		var dartVal string
+		if strings.HasPrefix(v, "EXPR:") {
+			// It's a Dart string expression, use as-is.
+			dartVal = strings.TrimPrefix(v, "EXPR:")
+		} else {
+			dartVal = strlit.Quoted(v)
+		}
+		headers = append(headers, fmt.Sprintf("%s: %s", strlit.Quoted(headerName), dartVal))
+		if strings.ToLower(headerName) == "content-type" {
+			hasContentType = true
 		}
 	}
 	if !hasContentType {
 		headers = append(headers, `"Content-Type": "application/json"`)
 	}
-	if len(headers) == 0 {
-		return ""
-	}
 	return fmt.Sprintf(" headers: {%s}", strings.Join(headers, ", "))
-}
-
-func formatRawExpr(parts []ast.ExprPart) string {
-	var sb strings.Builder
-	for _, p := range parts {
-		sb.WriteString(p.Value)
-	}
-	return sb.String()
 }
 
 func dartColor(val string, fallback string) string {
@@ -729,11 +844,23 @@ func dartColor(val string, fallback string) string {
 	}
 	if strings.HasPrefix(val, "#") {
 		hex := strings.TrimPrefix(val, "#")
-		if len(hex) == 6 {
-			return "const Color(0xFF" + strings.ToUpper(hex) + ")"
+		switch len(hex) {
+		case 3:
+			// #RGB -> opaque #RRGGBB.
+			hex = "FF" + strings.Repeat(string(hex[0]), 2) + strings.Repeat(string(hex[1]), 2) + strings.Repeat(string(hex[2]), 2)
+		case 6:
+			hex = "FF" + hex
+		case 8:
+			// #AARRGGBB as-is.
+		default:
+			return fallback
 		}
+		return "const Color(0x" + strings.ToUpper(hex) + ")"
 	}
-	return "Colors." + strings.ToLower(val)
+	if name, ok := ast.CanonicalColorName(val); ok {
+		return "Colors." + name
+	}
+	return fallback
 }
 
 func dartCrossAlign(align string) string {

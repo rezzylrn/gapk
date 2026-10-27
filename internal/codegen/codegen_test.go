@@ -18,12 +18,19 @@ func TestCodegen(t *testing.T) {
 		t.Fatalf("failed to read test file: %v", err)
 	}
 
-	app, err := parser.New(lexer.Tokenize(string(data))).ParseApp()
+	tokens, err := lexer.Tokenize(string(data))
+	if err != nil {
+		t.Fatalf("failed to tokenize: %v", err)
+	}
+	app, err := parser.New(tokens).ParseApp()
 	if err != nil {
 		t.Fatalf("failed to parse: %v", err)
 	}
 
-	flutterOut := codegen.GenerateFlutterDart(app)
+	flutterOut, err := codegen.GenerateFlutterDart(app)
+	if err != nil {
+		t.Fatalf("failed to generate flutter: %v", err)
+	}
 	if !strings.Contains(flutterOut, "class GoMartApp extends StatefulWidget") {
 		t.Errorf("flutter output missing GoMartApp class")
 	}
@@ -31,7 +38,10 @@ func TestCodegen(t *testing.T) {
 		t.Errorf("flutter output missing routes table")
 	}
 
-	composeOut := codegen.GenerateKotlinCompose(app)
+	composeOut, err := codegen.GenerateKotlinCompose(app)
+	if err != nil {
+		t.Fatalf("failed to generate compose: %v", err)
+	}
 	if !strings.Contains(composeOut, "class MainActivity : ComponentActivity()") {
 		t.Errorf("compose output missing MainActivity")
 	}
