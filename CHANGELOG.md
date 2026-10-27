@@ -18,7 +18,8 @@ All notable changes to gapk are documented here. The format is based on
   handlers are `async` like `button` already was.
 - `storage_get`/`storage_set` are awaited instead of fire-and-forget
   `.then()` calls, so a token read before an HTTP call is no longer stale.
-- `http_post` now checks the 2xx status code like `http_get` does.
+- `http_post` now checks the 2xx status code like `http_get` does;
+  both use the same 2xx range now.
 - Diamond imports (two files importing the same file) no longer report
   a false circular import. Real cycles still error.
 - Fragment files that start with `import` lines now parse their screens
@@ -30,6 +31,15 @@ All notable changes to gapk are documented here. The format is based on
 - Colors accept `#RGB`, `#RRGGBB`, and `#AARRGGBB`, plus canonical
   Material names (`gray` → `grey`, `blue_grey` → `blueGrey`).
 - Generated header maps are deterministic (keys sorted).
+- String literals inside parentheses (e.g. `("Hi " + name)`) no
+  longer split the expression into broken parts that generated
+  invalid Dart/Kotlin.
+- Compose support check now walks drawer and bottom-nav children, so
+  unsupported features there fail loudly instead of being dropped.
+- `list_remove` accepts full index expressions (`idx + 1`), matching
+  what the parser and codegen already supported.
+- `padding [padding: N]` works (previously only `[all: N]` was read);
+  duplicate `header_*` modifiers are rejected.
 - `gapk build` runs a real `flutter create` scaffold (with `android/`
   and Gradle) instead of emitting only `pubspec.yaml` + `main.dart`;
   without Flutter installed it says so plainly instead of implying an

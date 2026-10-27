@@ -401,10 +401,17 @@ func (v *validator) checkAction(act ast.ActionNode, scope map[string]bool) {
 			v.err(act.Line, "%s requires a list state, %q is %s", act.Kind, act.TargetVar, st.Kind)
 		}
 		if act.Kind == "list_remove" {
-			val := strings.TrimSpace(act.ExprValue)
-			if _, err := strconv.Atoi(val); err != nil && !iconNameRe.MatchString(val) {
-				v.err(act.Line, "list_remove index must be a number or a variable, got %q", val)
+			// The index is a full expression (number, variable, or
+			// arithmetic over states); codegen bounds-checks it. A
+			// string literal can never be an index.
+			if toks, err := lexer.Tokenize(act.ExprValue); err == nil {
+				for _, tok := range toks {
+					if tok.Type == token.String {
+						v.err(act.Line, "list_remove index must be a number or a variable, got %q", act.ExprValue)
+					}
+				}
 			}
+			v.checkCodeIdents(act.ExprValue, scope, act.Line, "list_remove index")
 		} else {
 			v.checkCodeIdents(act.ExprValue, scope, act.Line, "list_add value")
 		}

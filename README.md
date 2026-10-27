@@ -121,7 +121,7 @@ of being silently dropped — this target is not yet at parity. It needs
 ## Developing
 
 ```sh
-go test ./...   # 30 tests: lexer, parser, validation, codegen, compiler
+go test ./...   # 35 tests: lexer, parser, validation, codegen, compiler
 go vet ./...
 ```
 

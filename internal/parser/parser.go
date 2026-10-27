@@ -71,6 +71,9 @@ func (p *Parser) parseModifiers() (ast.Modifiers, error) {
 
 		// For header_ modifiers, parse as expression (supports "Bearer " + token)
 		if strings.HasPrefix(keyTok.Literal, "header_") {
+			if _, dup := mods[keyTok.Literal]; dup {
+				return nil, fmt.Errorf("line %d: duplicate modifier '%s'", keyTok.Line, keyTok.Literal)
+			}
 			parts, err := p.parseExpr()
 			if err != nil {
 				return nil, fmt.Errorf("line %d: invalid header value for key '%s'", p.cur().Line, keyTok.Literal)
@@ -739,6 +742,18 @@ func (p *Parser) parseExpr() ([]ast.ExprPart, error) {
 		tok := p.cur()
 		switch {
 		case tok.Type == token.String && needOperand:
+			if depth > 0 {
+				// A string literal inside parentheses belongs to the
+				// surrounding code run: splitting it into its own part
+				// would break the parentheses (e.g. ("Hi " + name)
+				// became "${(}Hi ${name )}"). Fold it in, quoted and
+				// escaped for the target language.
+				appendCode(strlit.Quoted(tok.Literal))
+				p.advance()
+				needOperand = false
+				sawAnything = true
+				continue
+			}
 			flushCode()
 			parts = append(parts, ast.ExprPart{IsLiteral: true, Value: tok.Literal})
 			p.advance()

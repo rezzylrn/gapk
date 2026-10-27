@@ -263,6 +263,9 @@ func (g *composeGen) renderComposeWidget(out *strings.Builder, w ast.WidgetNode,
 	case "padding":
 		pad := w.Props["all"]
 		if pad == "" {
+			pad = w.Props["padding"] // padding [padding: N] also works
+		}
+		if pad == "" {
 			pad = "12"
 		}
 		out.WriteString(fmt.Sprintf("%sBox(modifier = Modifier.padding(%s)) {\n", indent, kotlinDp(pad)))
@@ -605,6 +608,16 @@ func checkComposeSupport(app *ast.AppNode) error {
 	for _, sc := range app.Screens {
 		if sc.AppBar != nil {
 			for _, ch := range sc.AppBar.Children {
+				walkWidget(ch)
+			}
+		}
+		if sc.Drawer != nil {
+			for _, ch := range sc.Drawer.Children {
+				walkWidget(ch)
+			}
+		}
+		if sc.BotNav != nil {
+			for _, ch := range sc.BotNav.Children {
 				walkWidget(ch)
 			}
 		}

@@ -3,6 +3,7 @@ package parser_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gapk-lang/gapk/internal/ast"
@@ -137,6 +138,36 @@ func TestParseDuplicateModifierRejected(t *testing.T) {
 	}
 	if _, err := parser.New(tokens).ParseApp(); err == nil {
 		t.Error("expected duplicate modifier error")
+	}
+}
+
+func TestParseParenthesizedStringLiteral(t *testing.T) {
+	// Regression: ("Hi " + name) used to split into broken parts
+	// ("(", "Hi ", "name )") that generated invalid Dart.
+	tokens, err := lexer.Tokenize(`app "X" { name := "Bob" screen "H" { column { text ("Hi " + name) } } }`)
+	if err != nil {
+		t.Fatalf("tokenize: %v", err)
+	}
+	app, err := parser.New(tokens).ParseApp()
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	parts := app.Screens[0].Widgets[0].Children[0].TextExpr
+	if len(parts) != 1 || parts[0].IsLiteral {
+		t.Fatalf("expected one code part, got %+v", parts)
+	}
+	if !strings.Contains(parts[0].Value, `"Hi "`) || !strings.Contains(parts[0].Value, "name") {
+		t.Errorf("paren expr = %q", parts[0].Value)
+	}
+}
+
+func TestParseDuplicateHeaderModifierRejected(t *testing.T) {
+	tokens, err := lexer.Tokenize(`app "X" { r := "" screen "H" { button "B" { http_get "https://x.test" [header_Authorization: "a", header_Authorization: "b"] into r } } }`)
+	if err != nil {
+		t.Fatalf("tokenize: %v", err)
+	}
+	if _, err := parser.New(tokens).ParseApp(); err == nil {
+		t.Error("expected duplicate header modifier error")
 	}
 }
 

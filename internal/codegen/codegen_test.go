@@ -199,6 +199,41 @@ func TestComposeRejectsUnsupported(t *testing.T) {
 	}
 }
 
+func TestComposeRejectsDrawerImageAndHttp(t *testing.T) {
+	// Regression: checkComposeSupport never walked drawer children,
+	// so image/http inside a drawer were silently dropped.
+	for _, src := range []string{
+		`app "X" { screen "H" { drawer { image "https://x.test/a.png" } column { text "hi" } } }`,
+		`app "X" { r := "" screen "H" { drawer { listtile "T" "S" { http_get "https://x.test/api" into r } } column { text "hi" } } }`,
+	} {
+		tokens, err := lexer.Tokenize(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		app, err := parser.New(tokens).ParseApp()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := codegen.GenerateKotlinCompose(app); err == nil {
+			t.Errorf("expected compose to reject %q", src)
+		}
+	}
+}
+
+func TestFlutterParenthesizedStringLiteral(t *testing.T) {
+	out := genFlutter(t, `app "X" { name := "Bob" screen "H" { column { text ("Hi " + name) } } }`)
+	if !strings.Contains(out, `Text("${( "Hi " + name )}")`) {
+		t.Errorf("paren string expr generated bad output:\n%s", out)
+	}
+}
+
+func TestFlutterPaddingModifierKey(t *testing.T) {
+	out := genFlutter(t, `app "X" { screen "H" { padding [padding: 16] { text "a" } } }`)
+	if !strings.Contains(out, "EdgeInsets.all(16") {
+		t.Errorf("padding [padding: N] did not render:\n%s", out)
+	}
+}
+
 func TestFlutterImageConcatAndListBounds(t *testing.T) {
 	out := genFlutter(t, `
 app "X" {

@@ -500,6 +500,9 @@ func (g *flutterGen) renderFlutterWidget(out *strings.Builder, w ast.WidgetNode,
 	case "padding":
 		pad := w.Props["all"]
 		if pad == "" {
+			pad = w.Props["padding"] // padding [padding: N] also works
+		}
+		if pad == "" {
 			pad = "12"
 		}
 		out.WriteString(fmt.Sprintf("Padding(\n%s  padding: const EdgeInsets.all(%s),\n", indent, pad))
@@ -733,7 +736,7 @@ func (g *flutterGen) renderFlutterActions(out *strings.Builder, actions []ast.Ac
 			if headersCode != "" {
 				headersCode = "," + headersCode
 			}
-			out.WriteString(fmt.Sprintf("%stry {\n%s  final _res = await http.get(Uri.parse(%s)%s);\n%s  if (_res.statusCode == 200) setState(() => %s = _res.body); else setState(() => %s = \"\");\n%s} catch (_) { setState(() => %s = \"\"); }\n",
+			out.WriteString(fmt.Sprintf("%stry {\n%s  final _res = await http.get(Uri.parse(%s)%s);\n%s  if (_res.statusCode >= 200 && _res.statusCode < 300) setState(() => %s = _res.body); else setState(() => %s = \"\");\n%s} catch (_) { setState(() => %s = \"\"); }\n",
 				indent, indent, strlit.Quoted(act.ExprValue), headersCode, indent, act.TargetVar, act.TargetVar, indent, act.TargetVar))
 		case "http_post":
 			headersCode := buildHeadersCode(act.Props)

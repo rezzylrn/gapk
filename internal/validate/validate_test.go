@@ -110,9 +110,14 @@ func TestValidationErrors(t *testing.T) {
 			"must store into a string state",
 		},
 		{
-			"list_remove non numeric index",
+			"list_remove expression index",
+			`app "X" { items := ["a"] idx := 0 screen "H" { button "B" { list_remove items idx + 1 } } }`,
+			"", // valid: no error expected; handled below
+		},
+		{
+			"list_remove string index",
 			`app "X" { items := ["a"] screen "H" { button "B" { list_remove items "a" } } }`,
-			"must be a number",
+			"list_remove index must be a number",
 		},
 		{
 			"no screens",
@@ -128,6 +133,12 @@ func TestValidationErrors(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			err := mustValidate(t, c.src)
+			if c.want == "" {
+				if err != nil {
+					t.Fatalf("expected valid, got %v", err)
+				}
+				return
+			}
 			if err == nil {
 				t.Fatalf("expected error containing %q, got none", c.want)
 			}
