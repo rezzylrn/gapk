@@ -313,11 +313,6 @@ func (v *validator) checkWidget(w ast.WidgetNode, scope map[string]bool) {
 	for _, ch := range w.Children {
 		v.checkWidget(ch, scope)
 	}
-	// Button-like widgets handled above still need action checks for
-	// listtile (done) — other action hosts have no children to walk.
-	if w.Kind == "button" {
-		// actions already checked
-	}
 }
 
 func (v *validator) checkProgress(w ast.WidgetNode, scope map[string]bool) {
@@ -327,6 +322,11 @@ func (v *validator) checkProgress(w ast.WidgetNode, scope map[string]bool) {
 	}
 	val := w.TextExpr[0].Value
 	if _, err := strconv.ParseFloat(val, 64); err == nil {
+		return
+	}
+	if strings.ContainsAny(val, "+-*/%() ") {
+		// An arithmetic expression over states: check identifiers only.
+		v.checkCodeIdents(val, scope, w.Line, "progress")
 		return
 	}
 	st, ok := v.states[val]
@@ -438,6 +438,7 @@ func (v *validator) checkAction(act ast.ActionNode, scope map[string]bool) {
 			}
 		}
 	case "storage_set":
+		v.checkCodeIdents(act.BodyExpr, scope, act.Line, "storage_set value")
 	case "if":
 		v.checkCodeIdents(act.CondExpr, scope, act.Line, "if condition")
 		v.checkActions(act.ThenActions, scope)

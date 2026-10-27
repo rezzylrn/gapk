@@ -147,7 +147,10 @@ func BuildProjectOptions(inputFile, outDir, target string, opts BuildOptions) er
 		}
 		fmt.Printf("[gapk] generated Flutter project files in %s\n", outDir)
 		fmt.Println("[gapk] 'flutter' CLI not found in PATH, so no APK was built.")
-		fmt.Println("[gapk] To build: install Flutter, then run: flutter create --platforms=android <dir> && cp <dir>/lib/main.dart <created>/lib/main.dart && flutter build apk")
+		fmt.Println("[gapk] To build: install Flutter, then run:")
+		fmt.Println("[gapk]   flutter create --platforms=android <newdir>")
+		fmt.Printf("[gapk]   cp %s/lib/main.dart <newdir>/lib/main.dart && cp %s/pubspec.yaml <newdir>/pubspec.yaml\n", outDir, outDir)
+		fmt.Println("[gapk]   cd <newdir> && flutter build apk")
 		return nil
 	}
 
