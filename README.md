@@ -127,3 +127,7 @@ go vet ./...
 
 The compiler has zero runtime dependencies — just the Go standard
 library. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
